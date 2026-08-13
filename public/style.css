@@ -25,7 +25,7 @@ a { color: inherit; }
 
 .masthead { height: 54px; padding: 0 18px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #161616; position: sticky; top: 0; z-index: 10; background: rgb(5 5 5 / 94%); backdrop-filter: blur(16px); }
 .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
-.brand-mark { width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid #555; border-radius: 8px; font: 9px var(--mono); letter-spacing: -.12em; }
+.brand-mark { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #555; border-radius: 8px; font: 9px var(--mono); letter-spacing: -.12em; }
 .brand-mark span { color: var(--sage); }
 .brand b { font-size: 15px; letter-spacing: -.015em; }
 .mast-meta, .live { display: flex; align-items: center; gap: 14px; }
