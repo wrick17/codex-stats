@@ -3,7 +3,7 @@ set -euo pipefail
 
 [[ "$EUID" -ne 0 ]] || { echo "Run this installer as your normal user, without sudo." >&2; exit 1; }
 
-repo="https://raw.githubusercontent.com/wrick17/codex-stats/master"
+repo="https://api.github.com/repos/wrick17/codex-stats/contents"
 install_dir="$HOME/.local/share/codex-stats"
 launch_agent="$HOME/Library/LaunchAgents/com.codex-stats.sync.plist"
 log_file="$HOME/Library/Logs/codex-stats.log"
@@ -16,9 +16,8 @@ bun_bin="$(brew --prefix)/bin/bun"
 mkdir -p "$install_dir" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
-cache_bust="$(date +%s)"
-curl -fsSL "$repo/agent/collector.js?$cache_bust" -o "$tmp_dir/collector.js"
-curl -fsSL "$repo/agent/enroll.js?$cache_bust" -o "$tmp_dir/enroll.js"
+curl -fsSL -H 'Accept: application/vnd.github.raw+json' "$repo/agent/collector.js?ref=master" -o "$tmp_dir/collector.js"
+curl -fsSL -H 'Accept: application/vnd.github.raw+json' "$repo/agent/enroll.js?ref=master" -o "$tmp_dir/enroll.js"
 install -m 755 "$tmp_dir/collector.js" "$install_dir/collector.js"
 install -m 755 "$tmp_dir/enroll.js" "$install_dir/enroll.js"
 
