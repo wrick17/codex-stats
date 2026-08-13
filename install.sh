@@ -13,11 +13,14 @@ codex_home="${CODEX_HOME:-$HOME/.codex}"
 
 [[ "$dashboard_port" =~ ^[0-9]+$ ]] && (( dashboard_port > 0 && dashboard_port < 65536 )) || { echo "CODEX_STATS_PORT must be between 1 and 65535." >&2; exit 1; }
 [[ "$codex_home" == /* ]] && [[ -d "$codex_home/sessions" || -d "$codex_home/archived_sessions" ]] || { echo "No Codex sessions found under '$codex_home'. Set CODEX_HOME to the correct absolute path." >&2; exit 1; }
+progress() { printf 'codex-stats: %s\n' "$1" >&2; }
 
+progress "Checking Bun runtime..."
 command -v brew >/dev/null || { echo "Homebrew is required: https://brew.sh" >&2; exit 1; }
 brew list bun >/dev/null 2>&1 || brew install bun </dev/null
 bun_bin="$(brew --prefix)/bin/bun"
 
+progress "Downloading the current collector..."
 mkdir -p "$install_dir" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -26,12 +29,14 @@ curl -fsSL -H 'Accept: application/vnd.github.raw+json' "$repo/agent/enroll.js?r
 install -m 755 "$tmp_dir/collector.js" "$install_dir/collector.js"
 install -m 755 "$tmp_dir/enroll.js" "$install_dir/enroll.js"
 
+progress "Validating collector authorization..."
 credential="$(security find-generic-password -a codex-stats -s codex-stats-ingest -w 2>/dev/null || true)"
 if [[ "$credential" == v1.* ]] && CODEX_HOME="$codex_home" CODEX_STATS_URL="$endpoint" "$bun_bin" "$install_dir/collector.js" --check; then
   :
 else
   check_status=$?
   [[ "$credential" != v1.* || "$check_status" -eq 2 ]] || { echo "Could not validate the existing collector credential; try again later." >&2; exit 1; }
+  progress "Waiting for browser authorization (up to 5 minutes)..."
   CODEX_STATS_URL="$endpoint" "$bun_bin" "$install_dir/enroll.js"
 fi
 unset credential
@@ -62,11 +67,14 @@ EOF
 
 chmod 600 "$launch_agent"
 plutil -lint "$launch_agent" >/dev/null
+progress "Installing and starting the background service..."
 uid="$(id -u)"
 launchctl bootout "gui/$uid" "$launch_agent" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$uid" "$launch_agent"
 launchctl kickstart -k "gui/$uid/com.codex-stats.sync"
 
-echo "Codex Stats installed for '$system_name'."
+echo "Codex Stats installation complete for '$system_name'."
+echo "The background service is checking historical sessions and may continue after this command exits."
 echo "Local status and manual sync: http://127.0.0.1:$dashboard_port"
+echo "Follow progress: tail -f \"$log_file\""
 echo "Automatic sync runs three minutes after Codex activity settles."

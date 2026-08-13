@@ -37,25 +37,15 @@ function dailyWindow(rows, window, costs = {}, dailyModels = {}) {
 
 const tooltipData=(row)=>`data-tooltip="day" data-tooltip-kind="trend" data-date="${row.day}" data-tokens="${Number(row.tokens||0)}" data-sessions="${Number(row.sessions||0)}" data-cost="${Number(row.estimated_cost||0)}" data-models="${esc(JSON.stringify(row.models||[]))}"`;
 
-function cardinalPath(points,key) {
-  if(!points.length) return "";
-  const value=(n)=>Number.isFinite(n)?Math.round(n*1000)/1000:0, clamp=(n,min,max)=>Math.min(max,Math.max(min,n));
-  if(points.length===1) return `M ${value(points[0].x)} ${value(points[0][key])}`;
-  const strength=.78;
-  return points.slice(1).reduce((path,point,i)=>{ const previous=points[i], before=points[i-1]||previous, after=points[i+2]||point, low=Math.min(previous[key],point[key]), high=Math.max(previous[key],point[key]); const c1x=clamp(previous.x+(point.x-before.x)*strength/6,previous.x,point.x), c1y=clamp(previous[key]+(point[key]-before[key])*strength/6,low,high), c2x=clamp(point.x-(after.x-previous.x)*strength/6,previous.x,point.x), c2y=clamp(point[key]-(after[key]-previous[key])*strength/6,low,high); return `${path} C ${value(c1x)} ${value(c1y)} ${value(c2x)} ${value(c2y)} ${value(point.x)} ${value(point[key])}`; },`M ${value(points[0].x)} ${value(points[0][key])}`);
-}
-
-function renderTrend(rows, area, lifetime) {
+function renderTrend(rows, lifetime) {
   if (!rows.length) return $("trend").innerHTML = '<p class="empty">No activity in this window.</p>';
   const width = 1000, height = 250, pad = 30, tokenValues=rows.map(d=>Number(d.tokens)), sessionValues=rows.map(d=>Number(d.sessions)), max = Math.max(...tokenValues, 1), sessionMax = Math.max(...sessionValues, 1), step = (width - pad * 2) / rows.length, barWidth = Math.max(.75, step * .64);
   const points=rows.map((d,i)=>({x:pad+(i+.5)*step,tokenY:height-pad-tokenValues[i]/max*(height-pad*2),sessionY:height-pad-sessionValues[i]/sessionMax*(height-pad*2)}));
-  const marks = rows.map((d,i) => { const p=points[i], h=height-pad-p.tokenY, x=p.x-barWidth/2, sessions=Number(d.sessions); return `<g class="trend-day">${area?"":`<rect class="token-bar" x="${x}" y="${p.tokenY}" width="${barWidth}" height="${h}" rx="${Math.min(2,barWidth/2)}"/><circle class="session-dot" cx="${p.x}" cy="${height-pad-(sessions/sessionMax)*44}" r="3"/>`}<rect class="trend-hit" x="${pad+i*step}" y="${pad}" width="${step}" height="${height-pad*2}" ${tooltipData(d)}/></g>`; }).join("");
-  const path=(key)=>cardinalPath(points,key), fill=(key)=>`${path(key)} L ${points.at(-1).x} ${height-pad} L ${points[0].x} ${height-pad} Z`;
-  const areaPath=area?`<path class="token-area-fill" d="${fill("tokenY")}"/><path class="session-area-fill" d="${fill("sessionY")}"/><path class="token-area-line" d="${path("tokenY")}"/><path class="session-area-line" d="${path("sessionY")}"/>`:"";
+  const marks = rows.map((d,i) => { const p=points[i], h=height-pad-p.tokenY, x=p.x-barWidth/2, sessions=Number(d.sessions); return `<g class="trend-day"><rect class="token-bar" x="${x}" y="${p.tokenY}" width="${barWidth}" height="${h}" rx="${Math.min(2,barWidth/2)}"/><circle class="session-dot" cx="${p.x}" cy="${height-pad-(sessions/sessionMax)*44}" r="${Math.max(1,Math.min(3,barWidth))}"/><rect class="trend-hit" x="${pad+i*step}" y="${pad}" width="${step}" height="${height-pad*2}" ${tooltipData(d)}/></g>`; }).join("");
   const labels = rows.filter((_, i) => i % Math.ceil(rows.length / 6) === 0).map((d) => `<text x="${pad+rows.indexOf(d)*step}" y="246">${lifetime?d.day.slice(0,7):d.day.slice(5)}</text>`).join("");
-  $("trend").setAttribute("aria-label",`${area?"Area":"Bar"} chart of daily token and session usage for ${lifetime?"lifetime":`${rows.length} days`}`);
+  $("trend").setAttribute("aria-label",`Bar chart of daily token and session usage for ${lifetime?"lifetime":`${rows.length} days`}`);
   $("trend-mode").textContent=lifetime?"Lifetime":`Last ${rows.length} days`;
-  $("trend").innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">${areaPath}${marks}${labels}</svg>`;
+  $("trend").innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">${marks}${labels}</svg>`;
 }
 
 function renderHeatmap(rows, label) {
@@ -98,13 +88,13 @@ function setupTooltip() {
 }
 
 function render(data) {
-  const s=data.summary, window=$("days").value, daily=dailyWindow(data.daily,window,data.estimatedCost?.daily,data.dailyModels), area=window==="90"||window==="lifetime";
+  const s=data.summary, window=$("days").value, daily=dailyWindow(data.daily,window,data.estimatedCost?.daily,data.dailyModels);
   $("kpi-sessions").textContent=number.format(s.sessions); $("kpi-systems").textContent=`across ${s.systems} systems`;
   $("kpi-tokens").textContent=fmtTokens(s.tokens); $("kpi-cache").textContent=`${s.input_tokens ? Math.round(s.cached_tokens/s.input_tokens*100) : 0}% input cached`;
   $("kpi-time").textContent=fmtTime(s.duration_ms); $("kpi-prompts").textContent=`${number.format(s.prompts)} prompts`;
   $("kpi-tools").textContent=number.format(s.tools); $("kpi-errors").textContent=`${number.format(s.errors)} errors observed`;
   $("kpi-cost").textContent=fmtCost(data.estimatedCost?.usd); $("kpi-cost-note").textContent=`${Math.round((data.estimatedCost?.coverage??1)*100)}% priced`;
-  renderTrend(daily,area,window==="lifetime"); renderHeatmap(daily,window==="lifetime"?"lifetime":`${window} days`); renderRing(s); renderRanks("models",data.models); renderRanks("repos",data.repos); renderRanks("skills",data.skills||[],"count");
+  renderTrend(daily,window==="lifetime"); renderHeatmap(daily,window==="lifetime"?"lifetime":`${window} days`); renderRing(s); renderRanks("models",data.models); renderRanks("repos",data.repos); renderRanks("skills",data.skills||[],"count");
   $("machines").innerHTML=data.systems.map(m=>`<article class="machine"><h3>${esc(m.name)}</h3><span>${esc(m.platform)} / ${esc(m.arch)} · Codex ${esc(m.codex_version)}</span><div class="machine-stats"><div>Sessions<b>${number.format(m.sessions)}</b></div><div>Tokens<b>${fmtTokens(m.tokens)}</b></div><div>Last seen<b>${fmtDate(m.last_seen_at).split(",")[0]}</b></div></div></article>`).join("");
   $("recent").innerHTML=data.recent.map(r=>`<tr><td>${fmtDate(r.started_at)}</td><td class="repo-cell">${esc(r.repo)}</td><td>${esc(r.system)}</td><td>${esc(r.model)} / ${esc(r.effort)}</td><td>${fmtTokens(r.total_tokens)}</td><td>${fmtTime(r.duration_ms)}</td><td>${number.format(r.tool_count)}</td><td><span class="status ${esc(r.status)}">${esc(r.status)}</span></td></tr>`).join("");
   const select=$("system"), selected=requestedSystem||select.value; select.innerHTML='<option value="all">All systems</option>'+data.systems.map(m=>`<option value="${esc(m.id)}">${esc(m.name)}</option>`).join(""); select.value=[...select.options].some(o=>o.value===selected)?selected:"all"; requestedSystem=select.value; persistFilters();
