@@ -172,7 +172,7 @@ describe("ingest backend", () => {
     const failed=await onRequest({request:valid.request,env:{DB,...valid.env},params:{path:["ingest"]}});
     expect(failed.status).toBe(500);
     expect(await failed.json()).toEqual({error:"Request failed"});
-    const unauthorized=await onRequest({request:new Request("https://codex-stats.pages.dev/api/me"),env:{},params:{path:["me"]}});
+    const unauthorized=await onRequest({request:new Request("https://codex-stats.wrick17.com/api/me"),env:{},params:{path:["me"]}});
     expect(unauthorized.status).toBe(401);
     expect(unauthorized.headers.get("Cache-Control")).toContain("no-store");
   });

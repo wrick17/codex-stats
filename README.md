@@ -2,7 +2,7 @@
 
 A private, consolidated Codex activity dashboard on Cloudflare Pages + D1.
 
-Live dashboard: <https://codex-stats.pages.dev>
+Live dashboard: <https://codex-stats.wrick17.com>
 
 ## Set up a Mac
 
@@ -58,7 +58,7 @@ One-time release setup:
 Run a previously enrolled collector once:
 
 ```sh
-CODEX_STATS_URL=https://codex-stats.pages.dev \
+CODEX_STATS_URL=https://codex-stats.wrick17.com \
 CODEX_STATS_TOKEN='<user-bound collector credential>' \
 CODEX_STATS_SYSTEM='My Mac' \
 bun agent/collector.js

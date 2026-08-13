@@ -246,7 +246,7 @@ async function sync(reconcile=false) {
     console.log("codex-stats: nothing new");
     return {found:files.length,parsed,uploaded:0,current:parsed};
   }
-  const endpoint = process.env.CODEX_STATS_URL || "https://codex-stats.pages.dev";
+  const endpoint = process.env.CODEX_STATS_URL || "https://codex-stats.wrick17.com";
   const token = await collectorToken();
   if (!token) throw new Error("Set CODEX_STATS_TOKEN (or add codex-stats-ingest to macOS Keychain)");
   const id = await installationId(codexRoot);
@@ -313,7 +313,7 @@ async function checkCredential() {
   if (!token) return 2;
   const body=JSON.stringify({systemId:await installationId(root),sessions:[]});
   try {
-    const response=await post(`${(process.env.CODEX_STATS_URL||"https://codex-stats.pages.dev").replace(/\/$/,"")}/api/missing`,body,token);
+    const response=await post(`${(process.env.CODEX_STATS_URL||"https://codex-stats.wrick17.com").replace(/\/$/,"")}/api/missing`,body,token);
     if (response.ok) return 0;
     return response.status===401 ? 2 : 1;
   } catch { return 1; }
@@ -328,7 +328,7 @@ async function main() {
   let syncing = false;
   let rerunMode = null;
   let initial = true;
-  const endpoint=process.env.CODEX_STATS_URL||"https://codex-stats.pages.dev", system=process.env.CODEX_STATS_SYSTEM||hostname();
+  const endpoint=process.env.CODEX_STATS_URL||"https://codex-stats.wrick17.com", system=process.env.CODEX_STATS_SYSTEM||hostname();
   const port=Number(process.env.CODEX_STATS_PORT)||DASHBOARD_PORT, nonce=crypto.randomUUID();
   const status={phase:"starting",system,endpoint,root,lastSuccessAt:null,nextRunAt:null,result:null,error:null};
   const arm = (delay,kind="activity",reconcile=false) => {

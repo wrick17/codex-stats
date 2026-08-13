@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-const endpoint=new URL(process.env.CODEX_STATS_URL||"https://codex-stats.pages.dev");
+const endpoint=new URL(process.env.CODEX_STATS_URL||"https://codex-stats.wrick17.com");
 const nonce=crypto.randomUUID();
 let finish;
 const completed=new Promise((resolve,reject)=>{ finish={resolve,reject}; });

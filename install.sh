@@ -7,7 +7,7 @@ repo="https://api.github.com/repos/wrick17/codex-stats/contents"
 install_dir="$HOME/.local/share/codex-stats"
 launch_agent="$HOME/Library/LaunchAgents/com.codex-stats.sync.plist"
 log_file="$HOME/Library/Logs/codex-stats.log"
-endpoint="${CODEX_STATS_URL:-https://codex-stats.pages.dev}"
+endpoint="${CODEX_STATS_URL:-https://codex-stats.wrick17.com}"
 dashboard_port="${CODEX_STATS_PORT:-47821}"
 codex_home="${CODEX_HOME:-$HOME/.codex}"
 
