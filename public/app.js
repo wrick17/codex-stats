@@ -37,15 +37,22 @@ function dailyWindow(rows, window, costs = {}, dailyModels = {}) {
 
 const tooltipData=(row)=>`data-tooltip="day" data-tooltip-kind="trend" data-date="${row.day}" data-tokens="${Number(row.tokens||0)}" data-sessions="${Number(row.sessions||0)}" data-cost="${Number(row.estimated_cost||0)}" data-models="${esc(JSON.stringify(row.models||[]))}"`;
 
+function cardinalPath(points,key) {
+  if(!points.length) return "";
+  const value=(n)=>Number.isFinite(n)?Math.round(n*1000)/1000:0, clamp=(n,min,max)=>Math.min(max,Math.max(min,n));
+  if(points.length===1) return `M ${value(points[0].x)} ${value(points[0][key])}`;
+  return points.slice(1).reduce((path,point,i)=>{ const previous=points[i], before=points[i-1]||previous, after=points[i+2]||point, low=Math.min(previous[key],point[key]), high=Math.max(previous[key],point[key]); const c1x=clamp(previous.x+(point.x-before.x)*.13,previous.x,point.x), c1y=clamp(previous[key]+(point[key]-before[key])*.13,low,high), c2x=clamp(point.x-(after.x-previous.x)*.13,previous.x,point.x), c2y=clamp(point[key]-(after[key]-previous[key])*.13,low,high); return `${path} C ${value(c1x)} ${value(c1y)} ${value(c2x)} ${value(c2y)} ${value(point.x)} ${value(point[key])}`; },`M ${value(points[0].x)} ${value(points[0][key])}`);
+}
+
 function renderTrend(rows, lifetime) {
   if (!rows.length) return $("trend").innerHTML = '<p class="empty">No activity in this window.</p>';
   const width = 1000, height = 250, pad = 30, tokenValues=rows.map(d=>Number(d.tokens)), sessionValues=rows.map(d=>Number(d.sessions)), max = Math.max(...tokenValues, 1), sessionMax = Math.max(...sessionValues, 1), step = (width - pad * 2) / rows.length, barWidth = Math.max(.75, step * .64);
   const points=rows.map((d,i)=>({x:pad+(i+.5)*step,tokenY:height-pad-tokenValues[i]/max*(height-pad*2),sessionY:height-pad-sessionValues[i]/sessionMax*(height-pad*2)}));
   const marks = rows.map((d,i) => { const p=points[i], h=height-pad-p.tokenY, x=p.x-barWidth/2, sessions=Number(d.sessions); return `<g class="trend-day"><rect class="token-bar" x="${x}" y="${p.tokenY}" width="${barWidth}" height="${h}" rx="${Math.min(2,barWidth/2)}"/><circle class="session-dot" cx="${p.x}" cy="${height-pad-(sessions/sessionMax)*44}" r="${Math.max(1,Math.min(3,barWidth))}"/><rect class="trend-hit" x="${pad+i*step}" y="${pad}" width="${step}" height="${height-pad*2}" ${tooltipData(d)}/></g>`; }).join("");
   const labels = rows.filter((_, i) => i % Math.ceil(rows.length / 6) === 0).map((d) => `<text x="${pad+rows.indexOf(d)*step}" y="246">${lifetime?d.day.slice(0,7):d.day.slice(5)}</text>`).join("");
-  $("trend").setAttribute("aria-label",`Bar chart of daily token and session usage for ${lifetime?"lifetime":`${rows.length} days`}`);
+  $("trend").setAttribute("aria-label",`Bar and line chart of daily token and session usage for ${lifetime?"lifetime":`${rows.length} days`}`);
   $("trend-mode").textContent=lifetime?"Lifetime":`Last ${rows.length} days`;
-  $("trend").innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">${marks}${labels}</svg>`;
+  $("trend").innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">${marks}<path class="token-trend-line" d="${cardinalPath(points,"tokenY")}"/>${labels}</svg>`;
 }
 
 function renderHeatmap(rows, label) {
@@ -103,12 +110,21 @@ function render(data) {
 }
 
 function toast(message) { $("toast").textContent=message; $("toast").classList.add("show"); setTimeout(()=>$("toast").classList.remove("show"),4500); }
+const authRetryKey="codex-stats:auth-retry";
+const signIn=()=>window.Shoo.startSignIn({requestPii:true,returnTo:location.pathname+location.search+location.hash});
+function reauthorize() {
+  window.Shoo?.clearIdentity();
+  if(sessionStorage.getItem(authRetryKey)) return showAuth("Sign in required");
+  sessionStorage.setItem(authRetryKey,"1");
+  return signIn();
+}
 
 async function load() {
   const version=++loadVersion;
   if (demoMode) return render(demoData());
   const identity=window.Shoo?.getIdentity();
   if (!identity?.token) return showAuth();
+  if(identity.receivedAt&&identity.expiresIn&&Date.now()>=identity.receivedAt+identity.expiresIn*1000-60000) return reauthorize();
   if (enrollment) {
     const response=await fetch("/api/enroll",{method:"POST",headers:{Authorization:`Bearer ${identity.token}`}});
     if (!response.ok) return rejectIdentity(response);
@@ -121,10 +137,10 @@ async function load() {
   const response=await fetch(url,{headers:{Authorization:`Bearer ${identity.token}`}});
   if(version!==loadVersion || demoMode) return;
   if (!response.ok) return rejectIdentity(response);
-  const data=await response.json(); if(version===loadVersion && !demoMode) { $("dashboard").hidden=false; $("auth-gate").hidden=true; $("sign-out").hidden=false; render(data); }
+  const data=await response.json(); if(version===loadVersion && !demoMode) { sessionStorage.removeItem(authRetryKey); $("dashboard").hidden=false; $("auth-gate").hidden=true; $("sign-out").hidden=false; render(data); }
 }
 
-async function rejectIdentity(response) { const message=(await response.json().catch(()=>({}))).error||"Authorization failed"; window.Shoo?.clearIdentity(); showAuth(message); toast(message); }
+async function rejectIdentity(response) { const message=(await response.json().catch(()=>({}))).error||"Authorization failed"; if(response.status!==401) return toast(message); if(message==="Sign in required") return reauthorize(); window.Shoo?.clearIdentity(); showAuth(message); toast(message); }
 function showAuth(message) { $("dashboard").hidden=true; $("auth-gate").hidden=false; $("sign-out").hidden=true; $("sign-in").hidden=false; $("sync-status").textContent="Private dashboard"; if(enrollment){ $("auth-title").textContent="Authorize this Mac"; $("auth-copy").textContent=message||"Sign in as wrick17@gmail.com to allow this collector to upload your Codex activity."; $("sign-in").textContent="Authorize with Google ↗"; } }
 
 window.addEventListener("DOMContentLoaded", async () => {
@@ -134,6 +150,6 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("demo-badge").hidden=!demoMode;
   try { await load(); } catch(error) { toast(error.message); }
   $("days").addEventListener("change",()=>{persistFilters();load().catch(e=>toast(e.message));}); $("system").addEventListener("change",()=>{requestedSystem=$("system").value;persistFilters();load().catch(e=>toast(e.message));});
-  $("sign-in").addEventListener("click",()=>window.Shoo.startSignIn({requestPii:true,returnTo:location.pathname+location.search+location.hash}));
+  $("sign-in").addEventListener("click",()=>{sessionStorage.removeItem(authRetryKey);signIn();});
   $("sign-out").addEventListener("click",()=>{window.Shoo?.clearIdentity();showAuth();});
 });

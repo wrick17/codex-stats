@@ -62,21 +62,22 @@ select { display: block; min-width: 124px; margin-top: 6px; padding: 7px 30px 7p
 .legend span { display: flex; align-items: center; gap: 7px; }
 .legend i { width: 9px; height: 9px; border-radius: 2px; }
 .amber { background: var(--apricot); }.cyan { background: var(--slate); }
-.trend { height: 148px; padding: 2px 0 0; }
+.trend { height: 220px; padding: 2px 0 0; }
 .trend svg { width: 100%; height: 100%; overflow: visible; }
 .trend .token-bar { fill: var(--slate); transition: fill .15s; pointer-events: none; }
 .trend .trend-day:hover .token-bar { fill: var(--apricot); }
 .trend .session-dot { fill: var(--apricot); }
+.trend .token-trend-line { fill: none; stroke: #a0a4ad; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; pointer-events: none; }
 .trend .trend-hit { fill: transparent; cursor: crosshair; outline: none; }
 .trend text { fill: #777; font: 10px var(--sans); }
 
 .grid-2, .grid-3 { display: grid; gap: 14px; margin-bottom: 30px; }
-.grid-2 { grid-template-columns: minmax(0, 58fr) minmax(0, 42fr); align-items: stretch; }
+.grid-2 { grid-template-columns: minmax(0, 1fr) 300px; align-items: stretch; }
 .grid-3 { grid-template-columns: repeat(3, 1fr); }
 .grid-2 .panel, .grid-3 .panel { height: 100%; padding: 0 20px 12px; border: 1px solid #292929; border-radius: 16px; background: var(--surface); }
 .grid-2 > .panel:first-child { display:flex; flex-direction:column; }
 .grid-2 .panel > header { min-height:52px; padding:13px 0 7px; }
-.grid-3 .panel > header { min-height: 64px; padding-top: 15px; }
+.grid-3 .panel > header { min-height: 52px; padding-top: 13px; }
 .cadence-body { width:100%; margin:auto 0; overflow-x:auto; scrollbar-width:thin; scrollbar-color:#444 transparent; }
 .cadence-calendar { --cell:10px; --gap:3px; --gutter:27px; --column-gap:4px; flex:0 0 auto; width:max-content; display:grid; grid-template-columns:var(--gutter) auto; grid-template-rows:14px auto; column-gap:var(--column-gap); }
 .month-labels { grid-column:1/-1; display:grid; grid-template-columns:var(--gutter) repeat(var(--columns),var(--cell)); gap:var(--gap); color:var(--dim); font-size:9px; white-space:nowrap; overflow:visible; }
@@ -92,18 +93,18 @@ select { display: block; min-width: 124px; margin-top: 6px; padding: 7px 30px 7p
 .heatmap .l1 { background: #354137; }.heatmap .l2 { background: #506050; }.heatmap .l3 { background: #6c8068; }.heatmap .l4 { background: var(--sage); }
 .heatmap-scale { margin-top: 9px; display: flex; justify-content: end; align-items: center; gap: 4px; color: var(--dim); font-size: 9px; }
 .heatmap-scale i { width: 10px; height: 10px; border-radius: 2px; background: #292929; }.heatmap-scale i:nth-of-type(2){background:#506050}.heatmap-scale i:nth-of-type(3){background:#6c8068}.heatmap-scale i:nth-of-type(4){background:var(--sage)}
-.ring-wrap { min-height: 142px; display: grid; grid-template-columns: minmax(104px, 1fr) minmax(140px, 1fr); place-items: center; gap: 14px; }
+.ring-wrap { min-height: 142px; display: grid; grid-template-columns: 104px minmax(130px, 140px); justify-content: center; align-items: center; gap: 12px; }
 .ring { width: 104px; height: 104px; border-radius: 50%; display: grid; place-items: center; position: relative; }
 .ring::after { content: ""; width: 66px; height: 66px; border-radius: 50%; background: var(--surface); position: absolute; }
 .ring b { position: relative; z-index: 1; font-size: 18px; }
-.ring-legend { display: grid; gap: 10px; min-width: 140px; }
+.ring-legend { display: grid; gap: 10px; min-width: 130px; }
 .ring-legend div { display: grid; grid-template-columns: 7px 1fr auto; gap: 8px; align-items: center; color: var(--muted); font-size: 11px; }
 .ring-legend i { width: 7px; height: 7px; border-radius: 2px; }.ring-legend b { color: var(--text); font-weight: 500; }
 
 .ranked > div { padding-top: 5px; }
-.rank { padding: 12px 0 10px; border-bottom: 1px solid #292929; }
+.rank { padding: 7px 0 6px; border-bottom: 1px solid #292929; }
 .rank:last-child { border: 0; }
-.rank-line { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 8px; font-size: 11px; }
+.rank-line { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 5px; font-size: 11px; }
 .rank-line span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }.rank-line b { color: var(--muted); font-weight: 500; }
 .bar { height: 4px; border-radius: 4px; background: #2b2b2b; overflow: hidden; }.bar i { height: 100%; display: block; border-radius: inherit; background: var(--apricot); }
 .ranked:nth-child(2) .bar i { background: var(--rose); }.ranked:nth-child(3) .bar i { background: var(--slate); }
@@ -144,7 +145,7 @@ tbody tr:last-child td { border: 0; }.repo-cell { color: var(--text); font-weigh
   main { width: calc(100% - 36px); }.grid-3 { grid-template-columns: 1fr; }.machine-grid { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 620px) {
-  .masthead { padding: 0 12px; }.top-link,.live span { display:none; }.dashboard-nav { padding:14px 0; margin-bottom:16px; }.hero { flex-direction:column; gap:12px; }.filters { width:100%; }.filters label { flex:1; }select { width:100%; min-width:0; }.kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }.grid-2 { grid-template-columns:1fr; }.grid-2 .panel { padding-right:10px; padding-left:10px; }.kpis article { min-height:96px; padding:14px; }.kpis strong { font-size:22px; }.machine-grid { grid-template-columns:1fr; }.ring-wrap { grid-template-columns:1fr 1fr; }.trend { height:132px; }
+  .masthead { padding: 0 12px; }.top-link,.live span { display:none; }.dashboard-nav { padding:14px 0; margin-bottom:16px; }.hero { flex-direction:column; gap:12px; }.filters { width:100%; }.filters label { flex:1; }select { width:100%; min-width:0; }.kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }.grid-2 { grid-template-columns:1fr; }.grid-2 .panel { padding-right:10px; padding-left:10px; }.kpis article { min-height:96px; padding:14px; }.kpis strong { font-size:22px; }.machine-grid { grid-template-columns:1fr; }.trend { height:190px; }
   .cadence-calendar { --cell:7px; --gap:2px; --gutter:22px; --column-gap:3px; grid-template-rows:11px auto; }
   .month-labels,.weekday-labels { font-size:7px; }
   .heatmap i { border-radius:1px; }
