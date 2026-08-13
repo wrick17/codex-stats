@@ -11,7 +11,7 @@ const server=Bun.serve({
   port:0,
   async fetch(request) {
     const url=new URL(request.url);
-    if (request.headers.get("Origin")!==endpoint.origin || url.pathname!==`/${nonce}`) return new Response("Forbidden",{status:403,headers});
+    if (url.pathname!==`/${nonce}`) return new Response("Forbidden",{status:403,headers});
     if (request.method!=="POST") return new Response("Method not allowed",{status:405,headers});
     let credential;
     try { credential=(await request.formData()).get("credential"); } catch {}
