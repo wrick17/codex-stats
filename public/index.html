@@ -6,25 +6,37 @@
   <meta name="theme-color" content="#0b0d0c">
   <meta name="description" content="Private, content-free Codex activity telemetry across personal systems.">
   <meta name="robots" content="noindex, nofollow">
-  <title>Codex Field Notes</title>
+  <title>Codex Stats</title>
   <link rel="stylesheet" href="/style.css">
   <script src="https://shoo.dev/shoo.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <div class="grain" aria-hidden="true"></div>
   <header class="masthead">
-    <a class="brand" href="/">
-      <span class="brand-mark">C<span>⁄</span>S</span>
-      <span><b>Codex</b><small>Field Notes</small></span>
+    <a class="brand" href="/" aria-label="Codex Stats home">
+      <span class="brand-mark" aria-hidden="true">C<span>⁄</span>S</span>
+      <span><b>Codex Stats</b></span>
     </a>
     <div class="mast-meta">
+      <a class="top-link" href="https://github.com/wrick17/codex-stats" target="_blank" rel="noreferrer">GitHub</a>
       <span class="live"><i></i><span id="sync-status">Waiting for sync</span></span>
       <button id="sign-out" class="text-button" hidden>Sign out</button>
     </div>
   </header>
 
-  <main>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <h2>Analytics</h2>
+      <nav aria-label="Dashboard sections">
+        <a class="active" href="#overview">Overview</a>
+        <a href="#usage">Usage</a>
+        <a href="#breakdown">Breakdowns</a>
+        <a href="#systems">Systems</a>
+        <a href="#sessions">Sessions</a>
+      </nav>
+      <p>Private metadata only.<br>No conversation content.</p>
+    </aside>
+    <main>
     <section id="auth-gate" class="auth-gate" hidden>
       <p class="eyebrow">Private telemetry</p>
       <h1>Your work,<br><em>measured quietly.</em></h1>
@@ -33,10 +45,10 @@
     </section>
 
     <div id="dashboard" hidden>
-      <section class="hero">
+      <section class="hero" id="overview">
         <div>
-          <p class="eyebrow">Personal activity ledger</p>
-          <h1>The shape of your<br><em>work with Codex.</em></h1>
+          <h1>Codex usage analytics</h1>
+          <p class="subtitle">Consolidated activity from every connected system.</p>
         </div>
         <div class="filters" aria-label="Dashboard filters">
           <label>Window
@@ -53,6 +65,8 @@
         </div>
       </section>
 
+      <nav class="view-tabs" aria-label="Analytics views"><a class="active" href="#usage">Usage</a><a href="#systems">Systems</a><a href="#sessions">Sessions</a></nav>
+
       <section class="kpis" aria-label="Key metrics">
         <article><span>Sessions</span><strong id="kpi-sessions">—</strong><small id="kpi-systems">across — systems</small></article>
         <article><span>Total tokens</span><strong id="kpi-tokens">—</strong><small id="kpi-cache">— cached</small></article>
@@ -60,7 +74,7 @@
         <article><span>Tool calls</span><strong id="kpi-tools">—</strong><small id="kpi-errors">— errors observed</small></article>
       </section>
 
-      <section class="panel span-2 trend-panel">
+      <section class="panel span-2 trend-panel" id="usage">
         <header><div><p class="eyebrow">Token current</p><h2>Usage over time</h2></div><div class="legend"><span><i class="amber"></i>Tokens</span><span><i class="cyan"></i>Sessions</span></div></header>
         <div id="trend" class="trend" role="img" aria-label="Daily token and session usage chart"></div>
       </section>
@@ -77,25 +91,26 @@
         </article>
       </section>
 
-      <section class="grid-3">
+      <section class="grid-3" id="breakdown">
         <article class="panel ranked"><header><div><p class="eyebrow">Compute</p><h2>Models</h2></div></header><div id="models"></div></article>
         <article class="panel ranked"><header><div><p class="eyebrow">Context</p><h2>Repositories</h2></div></header><div id="repos"></div></article>
         <article class="panel ranked"><header><div><p class="eyebrow">Leverage</p><h2>Tools</h2></div></header><div id="tools"></div></article>
       </section>
 
-      <section class="panel machines-panel">
+      <section class="panel machines-panel" id="systems">
         <header><div><p class="eyebrow">Fleet</p><h2>Systems</h2></div><span class="panel-note">Last reported state</span></header>
         <div id="machines" class="machine-grid"></div>
       </section>
 
-      <section class="panel sessions-panel">
+      <section class="panel sessions-panel" id="sessions">
         <header><div><p class="eyebrow">Logbook</p><h2>Recent sessions</h2></div><span class="panel-note">Most recent 30</span></header>
         <div class="table-scroll"><table><thead><tr><th>Started</th><th>Repository</th><th>System</th><th>Model</th><th>Tokens</th><th>Time</th><th>Tools</th><th>Status</th></tr></thead><tbody id="recent"></tbody></table></div>
       </section>
     </div>
-  </main>
+    </main>
+  </div>
 
-  <footer><span>CODEX FIELD NOTES / PRIVATE</span><span>CONTENT-FREE TELEMETRY</span></footer>
+  <footer><span>CODEX STATS / PRIVATE</span><span>CONTENT-FREE TELEMETRY</span></footer>
   <div id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>

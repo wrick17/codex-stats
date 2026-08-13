@@ -16,14 +16,10 @@ function demoData() {
 
 function renderTrend(rows) {
   if (!rows.length) return $("trend").innerHTML = '<p class="empty">No activity in this window.</p>';
-  const width = 1000, height = 250, pad = 30, max = Math.max(...rows.map((d) => Number(d.tokens)), 1), sessionMax = Math.max(...rows.map((d) => Number(d.sessions)), 1);
-  const point = (d, i) => [pad + i * ((width - pad * 2) / Math.max(rows.length - 1, 1)), height - pad - Number(d.tokens) / max * (height - pad * 2)];
-  const points = rows.map(point);
-  const line = points.map(([x,y], i) => `${i ? "L" : "M"}${x},${y}`).join(" ");
-  const area = `${line} L${points.at(-1)[0]},${height-pad} L${points[0][0]},${height-pad} Z`;
-  const labels = rows.filter((_, i) => i % Math.ceil(rows.length / 6) === 0).map((d) => `<text x="${point(d, rows.indexOf(d))[0]}" y="246">${d.day.slice(5)}</text>`).join("");
-  const dots = rows.map((d,i) => `<circle class="session-dot" cx="${point(d,i)[0]}" cy="${height-pad-(Number(d.sessions)/sessionMax)*52}" r="${2 + Number(d.sessions)/sessionMax*3}"><title>${d.day}: ${number.format(d.tokens)} tokens, ${d.sessions} sessions</title></circle>`).join("");
-  $("trend").innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><defs><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f1a33c" stop-opacity=".27"/><stop offset="1" stop-color="#f1a33c" stop-opacity="0"/></linearGradient></defs>${[.25,.5,.75,1].map(n=>`<line class="grid" x1="${pad}" y1="${height-pad-n*(height-pad*2)}" x2="${width-pad}" y2="${height-pad-n*(height-pad*2)}"/>`).join("")}<path class="area" d="${area}"/><path class="line" d="${line}"/>${dots}${labels}</svg>`;
+  const width = 1000, height = 250, pad = 30, max = Math.max(...rows.map((d) => Number(d.tokens)), 1), sessionMax = Math.max(...rows.map((d) => Number(d.sessions)), 1), step = (width - pad * 2) / rows.length, barWidth = Math.max(4, step * .58);
+  const bars = rows.map((d,i) => { const h=Number(d.tokens)/max*(height-pad*2), x=pad+i*step+(step-barWidth)/2; return `<rect class="token-bar" x="${x}" y="${height-pad-h}" width="${barWidth}" height="${h}" rx="2"><title>${d.day}: ${number.format(d.tokens)} tokens</title></rect><circle class="session-dot" cx="${x+barWidth/2}" cy="${height-pad-(Number(d.sessions)/sessionMax)*44}" r="3"><title>${d.sessions} sessions</title></circle>`; }).join("");
+  const labels = rows.filter((_, i) => i % Math.ceil(rows.length / 6) === 0).map((d) => `<text x="${pad+rows.indexOf(d)*step}" y="246">${d.day.slice(5)}</text>`).join("");
+  $("trend").innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">${[.25,.5,.75,1].map(n=>`<line class="grid" x1="${pad}" y1="${height-pad-n*(height-pad*2)}" x2="${width-pad}" y2="${height-pad-n*(height-pad*2)}"/>`).join("")}${bars}${labels}</svg>`;
 }
 
 function renderHeatmap(rows) {
