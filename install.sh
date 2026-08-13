@@ -10,7 +10,7 @@ log_file="$HOME/Library/Logs/codex-stats.log"
 endpoint="${CODEX_STATS_URL:-https://codex-stats.pages.dev}"
 
 command -v brew >/dev/null || { echo "Homebrew is required: https://brew.sh" >&2; exit 1; }
-brew list bun >/dev/null 2>&1 || brew install bun
+brew list bun >/dev/null 2>&1 || brew install bun </dev/null
 bun_bin="$(brew --prefix)/bin/bun"
 
 mkdir -p "$install_dir" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
