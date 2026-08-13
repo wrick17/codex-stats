@@ -7,31 +7,32 @@ repo="https://raw.githubusercontent.com/wrick17/codex-stats/master"
 install_dir="$HOME/.local/share/codex-stats"
 launch_agent="$HOME/Library/LaunchAgents/com.codex-stats.sync.plist"
 log_file="$HOME/Library/Logs/codex-stats.log"
+endpoint="${CODEX_STATS_URL:-https://codex-stats.pages.dev}"
 
 command -v brew >/dev/null || { echo "Homebrew is required: https://brew.sh" >&2; exit 1; }
 brew list bun >/dev/null 2>&1 || brew install bun
 bun_bin="$(brew --prefix)/bin/bun"
 
 mkdir -p "$install_dir" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
-tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
-curl -fsSL "$repo/agent/collector.js" -o "$tmp"
-install -m 755 "$tmp" "$install_dir/collector.js"
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+curl -fsSL "$repo/agent/collector.js" -o "$tmp_dir/collector.js"
+curl -fsSL "$repo/agent/enroll.js" -o "$tmp_dir/enroll.js"
+install -m 755 "$tmp_dir/collector.js" "$install_dir/collector.js"
+install -m 755 "$tmp_dir/enroll.js" "$install_dir/enroll.js"
 
-if ! security find-generic-password -a codex-stats -s codex-stats-ingest >/dev/null 2>&1; then
-  token="${CODEX_STATS_TOKEN:-}"
-  if [[ -z "$token" ]]; then
-    printf 'Collector secret: ' >/dev/tty
-    IFS= read -rs token </dev/tty
-    printf '\n' >/dev/tty
-  fi
-  [[ -n "$token" ]] || { echo "Collector secret is required" >&2; exit 1; }
-  security add-generic-password -a codex-stats -s codex-stats-ingest -w "$token" -U >/dev/null
+credential="$(security find-generic-password -a codex-stats -s codex-stats-ingest -w 2>/dev/null || true)"
+if [[ "$credential" == v1.* ]] && CODEX_STATS_URL="$endpoint" "$bun_bin" "$install_dir/collector.js" --check; then
+  :
+else
+  check_status=$?
+  [[ "$credential" != v1.* || "$check_status" -eq 2 ]] || { echo "Could not validate the existing collector credential; try again later." >&2; exit 1; }
+  CODEX_STATS_URL="$endpoint" "$bun_bin" "$install_dir/enroll.js"
 fi
+unset credential
 
 default_name="$(scutil --get ComputerName 2>/dev/null || hostname -s)"
 system_name="${CODEX_STATS_SYSTEM:-$default_name}"
-endpoint="${CODEX_STATS_URL:-https://codex-stats.pages.dev}"
 xml_escape() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&apos;/g"; }
 
 cat >"$launch_agent" <<EOF

@@ -10,6 +10,49 @@ const noStore = {
 };
 const json = (data, status = 200) => Response.json(data, { status, headers:noStore });
 class HttpError extends Error { constructor(status, message) { super(message); this.status=status; } }
+const encoder = new TextEncoder();
+const normalizedEmail = (value) => typeof value === "string" ? value.trim().toLowerCase() : "";
+const base64url = (bytes) => btoa(String.fromCharCode(...bytes)).replaceAll("+","-").replaceAll("/","_").replace(/=+$/,"");
+const unbase64url = (value) => Uint8Array.from(atob(value.replaceAll("-","+").replaceAll("_","/").padEnd(Math.ceil(value.length/4)*4,"=")),(char)=>char.charCodeAt(0));
+const hmacKey = (secret, usages) => crypto.subtle.importKey("raw",encoder.encode(secret),{name:"HMAC",hash:"SHA-256"},false,usages);
+
+export const isOwner = (payload, email) => Boolean(payload.pairwise_sub && payload.email_verified === true &&
+  typeof payload.email === "string" && typeof email === "string" &&
+  normalizedEmail(payload.email) === normalizedEmail(email));
+
+export async function issueCollectorCredential(payload, secret) {
+  if (!secret || !payload?.pairwise_sub || !normalizedEmail(payload.email)) throw new Error("Collector enrollment is unavailable");
+  const claims=base64url(encoder.encode(JSON.stringify({v:1,email:normalizedEmail(payload.email),sub:payload.pairwise_sub,iat:Date.now()})));
+  const signature=await crypto.subtle.sign("HMAC",await hmacKey(secret,["sign"]),encoder.encode(claims));
+  return `v1.${claims}.${base64url(new Uint8Array(signature))}`;
+}
+
+export async function collectorOwner(credential, secret, allowedEmail) {
+  const [version,claims,signature,...extra]=String(credential||"").split(".");
+  if (version!=="v1" || !claims || !signature || extra.length || !secret) throw new HttpError(401,"Collector authorization required");
+  let valid=false, payload;
+  try {
+    valid=await crypto.subtle.verify("HMAC",await hmacKey(secret,["verify"]),unbase64url(signature),encoder.encode(claims));
+    payload=JSON.parse(new TextDecoder().decode(unbase64url(claims)));
+  } catch {}
+  if (!valid || payload?.v!==1 || !payload.sub || normalizedEmail(payload.email)!==normalizedEmail(allowedEmail)) {
+    throw new HttpError(401,"Collector authorization required");
+  }
+  return {email:normalizedEmail(payload.email),sub:payload.sub};
+}
+
+async function authenticatedCollectorRequest(request, env) {
+  const credential=request.headers.get("X-Codex-Token")||"";
+  const identity=await collectorOwner(credential,env.INGEST_TOKEN,env.OWNER_EMAIL);
+  const timestamp=request.headers.get("X-Codex-Timestamp")||"", signature=request.headers.get("X-Codex-Signature")||"";
+  const text=await request.text(), timestampNumber=Number(timestamp);
+  const signatureBytes=/^[0-9a-f]{64}$/.test(signature) ? Uint8Array.from(signature.match(/../g),(byte)=>parseInt(byte,16)) : null;
+  if (!Number.isFinite(timestampNumber) || Math.abs(Date.now()-timestampNumber)>300000 || !signatureBytes ||
+    !await crypto.subtle.verify("HMAC",await hmacKey(credential,["verify"]),signatureBytes,encoder.encode(`${timestamp}.${text}`))) {
+    throw new HttpError(401,"Invalid collector signature");
+  }
+  return {identity,text};
+}
 
 async function owner(request, env) {
   const token = request.headers.get("Authorization")?.replace(/^Bearer\s+/i, "");
@@ -19,7 +62,7 @@ async function owner(request, env) {
   try {
     ({ payload } = await jwtVerify(token, jwks, { issuer:"https://shoo.dev", audience:`origin:${origin}` }));
   } catch { throw new HttpError(401, "Sign in required"); }
-  if (!payload.pairwise_sub || !payload.email_verified || payload.email?.toLowerCase() !== env.OWNER_EMAIL?.toLowerCase()) {
+  if (!isOwner(payload, env.OWNER_EMAIL)) {
     throw new HttpError(401, "This dashboard is private");
   }
   return payload;
@@ -129,12 +172,12 @@ export function aggregateSkills(rows) {
     .map(([name,count])=>({name,count}));
 }
 
-export function ingestSessions(sessions, systemId, now) {
+export function ingestSessions(sessions, systemId, ownerEmail, now) {
   return sessions.flatMap((session) => {
     const id = clean(session?.id, 80), startedAt = clean(session?.startedAt, 40);
     if (!id || !startedAt) return [];
     return [{
-      uid:`${systemId}:${id}`, id, systemId, startedAt, endedAt:clean(session.endedAt, 40),
+      ownerEmail, uid:`${systemId}:${id}`, id, systemId, startedAt, endedAt:clean(session.endedAt, 40),
       cwdLabel:clean(session.cwdLabel, 100), repo:clean(session.repo, 100), branch:clean(session.branch, 120),
       source:clean(session.source, 60), cliVersion:clean(session.cliVersion, 40), model:clean(session.model, 80),
       effort:clean(session.effort, 20), status:clean(session.status, 20) || "active",
@@ -153,11 +196,11 @@ export function ingestSessions(sessions, systemId, now) {
 }
 
 export const SESSION_UPSERT_SQL = `
-  INSERT INTO sessions (uid,id,system_id,started_at,ended_at,cwd_label,repo,branch,source,cli_version,model,effort,status,
+  INSERT INTO sessions_by_owner (owner_email,uid,id,system_id,started_at,ended_at,cwd_label,repo,branch,source,cli_version,model,effort,status,
     input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,total_tokens,duration_ms,
     user_messages,assistant_messages,turn_count,tool_count,error_count,subagent_count,tools_json,skills_json,updated_at)
   SELECT
-    json_extract(value,'$.uid'), json_extract(value,'$.id'), json_extract(value,'$.systemId'),
+    json_extract(value,'$.ownerEmail'), json_extract(value,'$.uid'), json_extract(value,'$.id'), json_extract(value,'$.systemId'),
     json_extract(value,'$.startedAt'), json_extract(value,'$.endedAt'), json_extract(value,'$.cwdLabel'),
     json_extract(value,'$.repo'), json_extract(value,'$.branch'), json_extract(value,'$.source'),
     json_extract(value,'$.cliVersion'), json_extract(value,'$.model'), json_extract(value,'$.effort'),
@@ -169,7 +212,7 @@ export const SESSION_UPSERT_SQL = `
     json_extract(value,'$.skillsJson'),
     json_extract(value,'$.updatedAt')
   FROM json_each(?) WHERE 1
-  ON CONFLICT(uid) DO UPDATE SET ended_at=excluded.ended_at,cwd_label=excluded.cwd_label,repo=excluded.repo,
+  ON CONFLICT(owner_email,uid) DO UPDATE SET ended_at=excluded.ended_at,cwd_label=excluded.cwd_label,repo=excluded.repo,
     branch=excluded.branch,source=excluded.source,cli_version=excluded.cli_version,model=excluded.model,
     effort=excluded.effort,status=excluded.status,input_tokens=excluded.input_tokens,
     cached_input_tokens=excluded.cached_input_tokens,cache_write_tokens=excluded.cache_write_tokens,
@@ -177,7 +220,7 @@ export const SESSION_UPSERT_SQL = `
     duration_ms=excluded.duration_ms,user_messages=excluded.user_messages,assistant_messages=excluded.assistant_messages,
     turn_count=excluded.turn_count,tool_count=excluded.tool_count,error_count=excluded.error_count,
     subagent_count=excluded.subagent_count,tools_json=excluded.tools_json,
-    skills_json=COALESCE(excluded.skills_json,sessions.skills_json),updated_at=excluded.updated_at
+    skills_json=COALESCE(excluded.skills_json,sessions_by_owner.skills_json),updated_at=excluded.updated_at
 `;
 
 export function statsWindow(value, now=Date.now()) {
@@ -186,23 +229,17 @@ export function statsWindow(value, now=Date.now()) {
   return { days, since:new Date(now-days*86400000).toISOString() };
 }
 
-export function statsScope(value, system, now=Date.now()) {
+export function statsScope(value, system, ownerEmail, now=Date.now()) {
   const range = statsWindow(value,now), filteredSystem = system && system !== "all";
   return {
     ...range,
-    where:`${range.since ? "started_at >= ?" : "1=1"}${filteredSystem ? " AND system_id = ?" : ""}`,
-    args:[range.since,filteredSystem && system].filter(Boolean),
+    where:`owner_email = ?${range.since ? " AND started_at >= ?" : ""}${filteredSystem ? " AND system_id = ?" : ""}`,
+    args:[ownerEmail,range.since,filteredSystem && system].filter(Boolean),
   };
 }
 
 async function ingest(request, env) {
-  const timestamp = request.headers.get("X-Codex-Timestamp") || "";
-  const signature = request.headers.get("X-Codex-Signature") || "";
-  const text = await request.text();
-  if (!env.INGEST_TOKEN || Math.abs(Date.now() - Number(timestamp)) > 300000) return json({ error: "Invalid collector signature" }, 401);
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.INGEST_TOKEN), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const expected = [...new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${timestamp}.${text}`)))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  if (signature.length !== expected.length || ![...signature].every((char, index) => char === expected[index])) return json({ error: "Invalid collector signature" }, 401);
+  const {identity,text}=await authenticatedCollectorRequest(request,env);
 
   let body;
   try { body = JSON.parse(text); } catch { return json({ error:"Invalid JSON" }, 400); }
@@ -211,16 +248,16 @@ async function ingest(request, env) {
   }
 
   const now = new Date().toISOString();
-  const system = body.system, systemId = clean(system.id, 80), sessions = ingestSessions(body.sessions, systemId, now);
+  const system = body.system, systemId = clean(system.id, 80), sessions = ingestSessions(body.sessions, systemId, identity.email, now);
   const sessionJson = JSON.stringify(sessions);
   if (new TextEncoder().encode(sessionJson).byteLength > 1_900_000) return json({ error:"Session batch is too large" }, 413);
   const statements = [env.DB.prepare(`
-    INSERT INTO systems (id, name, hostname, platform, arch, codex_version, last_seen_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET name=excluded.name, hostname=excluded.hostname,
+    INSERT INTO systems_by_owner (owner_email, id, name, hostname, platform, arch, codex_version, last_seen_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(owner_email,id) DO UPDATE SET name=excluded.name, hostname=excluded.hostname,
       platform=excluded.platform, arch=excluded.arch, codex_version=excluded.codex_version,
       last_seen_at=excluded.last_seen_at
-  `).bind(systemId, clean(system.name, 80) || "Unknown system", clean(system.hostname, 120),
+  `).bind(identity.email,systemId, clean(system.name, 80) || "Unknown system", clean(system.hostname, 120),
     clean(system.platform, 40), clean(system.arch, 40), clean(system.codexVersion, 40), now),
     env.DB.prepare(SESSION_UPSERT_SQL).bind(sessionJson)];
 
@@ -228,14 +265,36 @@ async function ingest(request, env) {
   return json({ ok: true, accepted:sessions.length, syncedAt: now });
 }
 
+async function missingSessions(request,env) {
+  const {identity,text}=await authenticatedCollectorRequest(request,env);
+  let body;
+  try { body=JSON.parse(text); } catch { return json({error:"Invalid JSON"},400); }
+  const systemId=clean(body?.systemId,80);
+  if (!systemId || !Array.isArray(body?.sessions) || body.sessions.length>1000) return json({error:"Expected a system and up to 1000 session timestamps"},400);
+  const manifest=body.sessions.flatMap((session)=>{
+    const id=clean(session?.id,80), updatedAt=clean(session?.updatedAt,40);
+    return id&&updatedAt ? [{id,updatedAt}] : [];
+  });
+  if (!manifest.length) return json({missing:[]});
+  const rows=await env.DB.prepare(`
+    WITH incoming AS (
+      SELECT json_extract(value,'$.id') id, json_extract(value,'$.updatedAt') updated_at FROM json_each(?)
+    )
+    SELECT incoming.id FROM incoming LEFT JOIN sessions_by_owner s
+      ON s.owner_email=? AND s.system_id=? AND s.id=incoming.id
+    WHERE s.uid IS NULL OR s.skills_json IS NULL OR COALESCE(s.ended_at,s.started_at) < incoming.updated_at
+  `).bind(JSON.stringify(manifest),identity.email,systemId).all();
+  return json({missing:rows.results.map((row)=>row.id)});
+}
+
 async function stats(request, env) {
-  await owner(request, env);
+  const identity=await owner(request, env), ownerEmail=normalizedEmail(identity.email);
   const url = new URL(request.url);
   const system = clean(url.searchParams.get("system"), 80);
-  const { days, since, where, args } = statsScope(url.searchParams.get("days"),system);
+  const { days, since, where, args } = statsScope(url.searchParams.get("days"),system,ownerEmail);
   const today = new Date().toISOString().slice(0,10);
   const bind = (statement) => statement.bind(...args);
-  const systemJoin = `x.system_id=s.id${since ? " AND x.started_at >= ?" : ""}`;
+  const systemJoin = `x.owner_email=s.owner_email AND x.system_id=s.id${since ? " AND x.started_at >= ?" : ""}`;
 
   const [summary, daily, systems, models, repos, recent, rows, priceCache] = await env.DB.batch([
     bind(env.DB.prepare(`SELECT COUNT(*) sessions, COALESCE(SUM(total_tokens),0) tokens,
@@ -243,20 +302,20 @@ async function stats(request, env) {
       COALESCE(SUM(output_tokens),0) output_tokens, COALESCE(SUM(reasoning_tokens),0) reasoning_tokens,
       COALESCE(SUM(duration_ms),0) duration_ms, COALESCE(SUM(tool_count),0) tools,
       COALESCE(SUM(user_messages),0) prompts, COALESCE(SUM(error_count),0) errors,
-      COUNT(DISTINCT system_id) systems, COUNT(DISTINCT repo) repos FROM sessions WHERE ${where}`)),
+      COUNT(DISTINCT system_id) systems, COUNT(DISTINCT repo) repos FROM sessions_by_owner WHERE ${where}`)),
     bind(env.DB.prepare(`SELECT date(started_at) day, COUNT(*) sessions, SUM(total_tokens) tokens,
-      SUM(tool_count) tools, SUM(duration_ms) duration_ms FROM sessions WHERE ${where} GROUP BY day ORDER BY day`)),
+      SUM(tool_count) tools, SUM(duration_ms) duration_ms FROM sessions_by_owner WHERE ${where} GROUP BY day ORDER BY day`)),
     env.DB.prepare(`SELECT s.id, s.name, s.platform, s.arch, s.codex_version, s.last_seen_at,
-      COUNT(x.uid) sessions, COALESCE(SUM(x.total_tokens),0) tokens FROM systems s LEFT JOIN sessions x
-      ON ${systemJoin} GROUP BY s.id ORDER BY tokens DESC`).bind(...[since].filter(Boolean)),
+      COUNT(x.uid) sessions, COALESCE(SUM(x.total_tokens),0) tokens FROM systems_by_owner s LEFT JOIN sessions_by_owner x
+      ON ${systemJoin} WHERE s.owner_email=? GROUP BY s.id ORDER BY tokens DESC`).bind(...[since,ownerEmail].filter(Boolean)),
     bind(env.DB.prepare(`SELECT COALESCE(model,'Unknown') name, COUNT(*) sessions, SUM(total_tokens) tokens,
-      SUM(output_tokens) output_tokens FROM sessions WHERE ${where} GROUP BY model ORDER BY tokens DESC LIMIT 12`)),
+      SUM(output_tokens) output_tokens FROM sessions_by_owner WHERE ${where} GROUP BY model ORDER BY tokens DESC LIMIT 12`)),
     bind(env.DB.prepare(`SELECT COALESCE(repo,'Unknown') name, COUNT(*) sessions, SUM(total_tokens) tokens,
-      SUM(duration_ms) duration_ms FROM sessions WHERE ${where} GROUP BY repo ORDER BY tokens DESC LIMIT 12`)),
+      SUM(duration_ms) duration_ms FROM sessions_by_owner WHERE ${where} GROUP BY repo ORDER BY tokens DESC LIMIT 12`)),
     bind(env.DB.prepare(`SELECT x.id, x.started_at, x.ended_at, x.repo, x.branch, x.model, x.effort, x.status,
       x.total_tokens, x.output_tokens, x.duration_ms, x.tool_count, x.error_count, s.name system
-      FROM sessions x JOIN systems s ON s.id=x.system_id WHERE ${where.replaceAll("started_at", "x.started_at")} ORDER BY x.started_at DESC LIMIT 30`)),
-    bind(env.DB.prepare(`SELECT date(started_at) day, skills_json, model, total_tokens, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens FROM sessions WHERE ${where}`)),
+      FROM sessions_by_owner x JOIN systems_by_owner s ON s.owner_email=x.owner_email AND s.id=x.system_id WHERE ${where.replaceAll("owner_email","x.owner_email").replaceAll("started_at", "x.started_at")} ORDER BY x.started_at DESC LIMIT 30`)),
+    bind(env.DB.prepare(`SELECT date(started_at) day, skills_json, model, total_tokens, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens FROM sessions_by_owner WHERE ${where}`)),
     env.DB.prepare("SELECT rates_json, source_url, fetched_at FROM pricing_cache WHERE day=?").bind(today),
   ]);
 
@@ -277,7 +336,12 @@ export async function onRequest(context) {
   try {
     let response;
     if (request.method === "POST" && path === "ingest") response = await ingest(request, env);
+    else if (request.method === "POST" && path === "missing") response = await missingSessions(request,env);
     else if (request.method === "GET" && path === "stats") response = await stats(request, env);
+    else if (request.method === "POST" && path === "enroll") {
+      const identity=await owner(request,env);
+      response=json({credential:await issueCollectorCredential(identity,env.INGEST_TOKEN)});
+    }
     if (request.method === "GET" && path === "me") {
       const identity = await owner(request, env);
       response = json({ name: identity.name, email: identity.email, picture: identity.picture });

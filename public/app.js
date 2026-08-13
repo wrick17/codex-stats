@@ -1,6 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const localDemoAllowed = ["localhost", "127.0.0.1"].includes(location.hostname);
 const demoMode = localDemoAllowed;
+const enrollment = (()=>{ try { const url=new URL(new URLSearchParams(location.search).get("enroll")); return url.protocol==="http:"&&["127.0.0.1","localhost"].includes(url.hostname)?url:null; } catch { return null; } })();
 let loadVersion = 0;
 const filterKey="codex-stats:filters", validWindows=new Set(["7","30","90","lifetime"]);
 function storedFilters(){ try{ const value=JSON.parse(localStorage.getItem(filterKey)||"{}"); return {days:validWindows.has(value.days)?value.days:"30",system:typeof value.system==="string"&&value.system?value.system:"all"}; }catch{return {days:"30",system:"all"};} }
@@ -123,19 +124,28 @@ async function load() {
   if (demoMode) return render(demoData());
   const identity=window.Shoo?.getIdentity();
   if (!identity?.token) return showAuth();
+  if (enrollment) {
+    const response=await fetch("/api/enroll",{method:"POST",headers:{Authorization:`Bearer ${identity.token}`}});
+    if (!response.ok) return rejectIdentity(response);
+    const {credential}=await response.json();
+    const form=document.createElement("form"), field=document.createElement("input");
+    form.method="POST"; form.action=enrollment.href; field.type="hidden"; field.name="credential"; field.value=credential;
+    form.append(field); document.body.append(form); showAuth("Completing authorization in the local installer..."); $("sign-in").hidden=true; form.submit(); return;
+  }
   const url=new URL("/api/stats",location.origin); url.searchParams.set("days",$("days").value); url.searchParams.set("system",requestedSystem||"all");
   const response=await fetch(url,{headers:{Authorization:`Bearer ${identity.token}`}});
   if(version!==loadVersion || demoMode) return;
-  if (!response.ok) throw new Error((await response.json()).error||"Could not load stats");
-  const data=await response.json(); if(version===loadVersion && !demoMode) render(data);
+  if (!response.ok) return rejectIdentity(response);
+  const data=await response.json(); if(version===loadVersion && !demoMode) { $("dashboard").hidden=false; $("auth-gate").hidden=true; $("sign-out").hidden=false; render(data); }
 }
 
-function showAuth() { $("dashboard").hidden=true; $("auth-gate").hidden=false; $("sign-out").hidden=true; $("sync-status").textContent="Private dashboard"; }
+async function rejectIdentity(response) { const message=(await response.json().catch(()=>({}))).error||"Authorization failed"; window.Shoo?.clearIdentity(); showAuth(message); toast(message); }
+function showAuth(message) { $("dashboard").hidden=true; $("auth-gate").hidden=false; $("sign-out").hidden=true; $("sign-in").hidden=false; $("sync-status").textContent="Private dashboard"; if(enrollment){ $("auth-title").textContent="Authorize this Mac"; $("auth-copy").textContent=message||"Sign in as wrick17@gmail.com to allow this collector to upload your Codex activity."; $("sign-in").textContent="Authorize with Google ↗"; } }
 
 window.addEventListener("DOMContentLoaded", async () => {
   setupTooltip();
   const restored=storedFilters(); $("days").value=restored.days; requestedSystem=restored.system;
-  $("dashboard").hidden=false; $("sign-out").hidden=demoMode;
+  $("dashboard").hidden=!demoMode; $("sign-out").hidden=true;
   $("demo-badge").hidden=!demoMode;
   try { await load(); } catch(error) { toast(error.message); }
   $("days").addEventListener("change",()=>{persistFilters();load().catch(e=>toast(e.message));}); $("system").addEventListener("change",()=>{requestedSystem=$("system").value;persistFilters();load().catch(e=>toast(e.message));});

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { debounceDelay, freshSession, MAX_SESSIONS, parseLine, publicSession, queueSession, recoverSessions, skillReads } from "./collector.js";
+import { BATCH_SIZE, debounceDelay, freshSession, parseLine, publicSession, queueSession, recoverSessions, selectMissing, skillReads } from "./collector.js";
 
 describe("collector", () => {
   test("keeps only aggregate session metadata and latest cumulative usage", () => {
@@ -26,7 +26,26 @@ describe("collector", () => {
   test("debounces for three minutes and allows one bounded recovery request", () => {
     expect(debounceDelay(1_000, 2_000)).toBe(179_000);
     expect(debounceDelay(1_000, 200_000)).toBe(0);
-    expect(MAX_SESSIONS).toBe(1000);
+    expect(BATCH_SIZE).toBe(100);
+  });
+
+  test("uploads only sessions the owner-scoped backend reports missing", () => {
+    const pending=["old","missing","changed"].map((id)=>({session:{id}}));
+    expect(selectMissing(pending,["missing","changed"]).map(({session})=>session.id)).toEqual(["missing","changed"]);
+  });
+
+  test("reconciles previously synced sessions after service start or reinstall", () => {
+    const id="019fea4f-89ba-7c71-b93d-53002d3bf32d";
+    const path=`/tmp/rollout-2026-01-01T00-00-00-${id}.jsonl`;
+    const session={...freshSession(),id,startedAt:"2026-01-01T00:00:00Z"};
+    const state={files:{[path]:{offset:100,session}},synced:{[id]:"already-synced"},pending:{}};
+
+    expect(recoverSessions(state,true)).toBe(1);
+    expect(state.pending[id].session).toMatchObject({id,startedAt:"2026-01-01T00:00:00Z"});
+    expect(state.pending[id].reconcile).toBe(true);
+    session.totalTokens=1;
+    expect(queueSession(state,session)).toBe(true);
+    expect(state.pending[id].reconcile).toBeUndefined();
   });
 
   test("counts only direct structural skill file reads", () => {

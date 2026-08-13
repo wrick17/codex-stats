@@ -1,13 +1,29 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { aggregateSkills, estimatedCost, ingestSessions, onRequest, parsePrices, SESSION_UPSERT_SQL, statsScope, statsWindow } from "./[[path]].js";
+import { aggregateSkills, collectorOwner, estimatedCost, ingestSessions, isOwner, issueCollectorCredential, onRequest, parsePrices, SESSION_UPSERT_SQL, statsScope, statsWindow } from "./[[path]].js";
 
-async function signedIngest(body, token="secret") {
+async function signedIngest(body, secret="secret", email="wrick17@gmail.com") {
+  const credential=await issueCollectorCredential({pairwise_sub:"owner",email},secret);
   const text=typeof body === "string" ? body : JSON.stringify(body), timestamp=Date.now().toString();
-  const key=await crypto.subtle.importKey("raw",new TextEncoder().encode(token),{name:"HMAC",hash:"SHA-256"},false,["sign"]);
+  const key=await crypto.subtle.importKey("raw",new TextEncoder().encode(credential),{name:"HMAC",hash:"SHA-256"},false,["sign"]);
   const signature=[...new Uint8Array(await crypto.subtle.sign("HMAC",key,new TextEncoder().encode(`${timestamp}.${text}`)))].map((byte)=>byte.toString(16).padStart(2,"0")).join("");
-  return {token,request:new Request("https://preview.pages.dev/api/ingest",{method:"POST",headers:{"X-Codex-Timestamp":timestamp,"X-Codex-Signature":signature},body:text})};
+  return {env:{INGEST_TOKEN:secret,OWNER_EMAIL:email},request:new Request("https://preview.pages.dev/api/ingest",{method:"POST",headers:{"X-Codex-Token":credential,"X-Codex-Timestamp":timestamp,"X-Codex-Signature":signature},body:text})};
 }
+
+test("allows only the configured verified Shoo email", () => {
+  const identity={pairwise_sub:"owner",email_verified:true,email:"WRICK17@gmail.com"};
+  expect(isOwner(identity,"wrick17@gmail.com")).toBe(true);
+  expect(isOwner({...identity,email:"someone@example.com"},"wrick17@gmail.com")).toBe(false);
+  expect(isOwner({...identity,email_verified:false},"wrick17@gmail.com")).toBe(false);
+  expect(isOwner({...identity,email:undefined},undefined)).toBe(false);
+});
+
+test("binds collector credentials to the allowed Shoo user", async () => {
+  const credential=await issueCollectorCredential({pairwise_sub:"owner",email:"wrick17@gmail.com"},"master");
+  expect(await collectorOwner(credential,"master","WRICK17@gmail.com")).toEqual({email:"wrick17@gmail.com",sub:"owner"});
+  await expect(collectorOwner(credential,"master","someone@example.com")).rejects.toThrow("Collector authorization required");
+  await expect(collectorOwner(`${credential}x`,"master","wrick17@gmail.com")).rejects.toThrow("Collector authorization required");
+});
 
 describe("daily API price estimate", () => {
   test("keeps fixed windows and makes lifetime unbounded", () => {
@@ -15,8 +31,8 @@ describe("daily API price estimate", () => {
     expect(statsWindow("90",1_000_000).days).toBe(90);
     expect(statsWindow("lifetime",1_000_000)).toEqual({days:"lifetime",since:null});
     expect(statsWindow("365",1_000_000).days).toBe(30);
-    expect(statsScope("lifetime","all",1_000_000)).toMatchObject({where:"1=1",args:[]});
-    expect(statsScope("lifetime","machine",1_000_000)).toMatchObject({where:"1=1 AND system_id = ?",args:["machine"]});
+    expect(statsScope("lifetime","all","owner@example.com",1_000_000)).toMatchObject({where:"owner_email = ?",args:["owner@example.com"]});
+    expect(statsScope("lifetime","machine","owner@example.com",1_000_000)).toMatchObject({where:"owner_email = ? AND system_id = ?",args:["owner@example.com","machine"]});
   });
 
   test("parses flagship standard and grouped Codex rates", () => {
@@ -85,22 +101,33 @@ describe("ingest backend", () => {
     const sessions=ingestSessions([
       {id:"a",startedAt:"2026-08-13T00:00:00Z",inputTokens:-4,tools:{exec:2},skills:{imagegen:2}},
       {id:null,startedAt:"2026-08-13T00:00:00Z"},
-    ],"machine","2026-08-13T01:00:00Z");
+    ],"machine","owner@example.com","2026-08-13T01:00:00Z");
     expect(sessions).toHaveLength(1);
-    expect(sessions[0]).toMatchObject({uid:"machine:a",inputTokens:0,toolsJson:'{"exec":2}',skillsJson:'{"imagegen":2}'});
+    expect(sessions[0]).toMatchObject({ownerEmail:"owner@example.com",uid:"machine:a",inputTokens:0,toolsJson:'{"exec":2}',skillsJson:'{"imagegen":2}'});
     expect(SESSION_UPSERT_SQL).toContain("FROM json_each(?)");
   });
 
   test("set-upserts skills and preserves them when an older collector omits the field", () => {
     const db=new Database(":memory:");
-    db.run(`CREATE TABLE sessions (uid TEXT PRIMARY KEY,id TEXT,system_id TEXT,started_at TEXT,ended_at TEXT,cwd_label TEXT,repo TEXT,branch TEXT,source TEXT,cli_version TEXT,model TEXT,effort TEXT,status TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,cache_write_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,total_tokens INTEGER,duration_ms INTEGER,user_messages INTEGER,assistant_messages INTEGER,turn_count INTEGER,tool_count INTEGER,error_count INTEGER,subagent_count INTEGER,tools_json TEXT,skills_json TEXT,updated_at TEXT)`);
-    const rows=ingestSessions([{id:"a",startedAt:"2026-08-13",totalTokens:10,skills:{imagegen:2}},{id:"b",startedAt:"2026-08-13",totalTokens:20}],"machine","now");
+    db.run(`CREATE TABLE sessions_by_owner (owner_email TEXT,uid TEXT,id TEXT,system_id TEXT,started_at TEXT,ended_at TEXT,cwd_label TEXT,repo TEXT,branch TEXT,source TEXT,cli_version TEXT,model TEXT,effort TEXT,status TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,cache_write_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,total_tokens INTEGER,duration_ms INTEGER,user_messages INTEGER,assistant_messages INTEGER,turn_count INTEGER,tool_count INTEGER,error_count INTEGER,subagent_count INTEGER,tools_json TEXT,skills_json TEXT,updated_at TEXT,PRIMARY KEY(owner_email,uid))`);
+    const rows=ingestSessions([{id:"a",startedAt:"2026-08-13",totalTokens:10,skills:{imagegen:2}},{id:"b",startedAt:"2026-08-13",totalTokens:20}],"machine","owner@example.com","now");
     db.query(SESSION_UPSERT_SQL).run(JSON.stringify(rows));
-    const older=ingestSessions([{id:"a",startedAt:"2026-08-13",totalTokens:30}],"machine","later");
+    const older=ingestSessions([{id:"a",startedAt:"2026-08-13",totalTokens:30}],"machine","owner@example.com","later");
     db.query(SESSION_UPSERT_SQL).run(JSON.stringify(older));
-    expect(db.query("SELECT id,total_tokens,skills_json FROM sessions ORDER BY id").all()).toEqual([
+    expect(db.query("SELECT id,total_tokens,skills_json FROM sessions_by_owner ORDER BY id").all()).toEqual([
       {id:"a",total_tokens:30,skills_json:'{"imagegen":2}'},
       {id:"b",total_tokens:20,skills_json:null},
+    ]);
+    db.close();
+  });
+
+  test("keeps identical session ids isolated by owner", () => {
+    const db=new Database(":memory:");
+    db.run(`CREATE TABLE sessions_by_owner (owner_email TEXT,uid TEXT,id TEXT,system_id TEXT,started_at TEXT,ended_at TEXT,cwd_label TEXT,repo TEXT,branch TEXT,source TEXT,cli_version TEXT,model TEXT,effort TEXT,status TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,cache_write_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,total_tokens INTEGER,duration_ms INTEGER,user_messages INTEGER,assistant_messages INTEGER,turn_count INTEGER,tool_count INTEGER,error_count INTEGER,subagent_count INTEGER,tools_json TEXT,skills_json TEXT,updated_at TEXT,PRIMARY KEY(owner_email,uid))`);
+    db.query(SESSION_UPSERT_SQL).run(JSON.stringify(ingestSessions([{id:"same",startedAt:"2026-08-13",totalTokens:10}],"mac","one@example.com","now")));
+    db.query(SESSION_UPSERT_SQL).run(JSON.stringify(ingestSessions([{id:"same",startedAt:"2026-08-13",totalTokens:20}],"mac","two@example.com","now")));
+    expect(db.query("SELECT owner_email,total_tokens FROM sessions_by_owner ORDER BY owner_email").all()).toEqual([
+      {owner_email:"one@example.com",total_tokens:10},{owner_email:"two@example.com",total_tokens:20},
     ]);
     db.close();
   });
@@ -115,22 +142,32 @@ describe("ingest backend", () => {
   });
 
   test("authenticated ingest executes exactly two D1 statements", async () => {
-    const {request,token}=await signedIngest({system:{id:"machine",name:"Mac"},sessions:[{id:"a",startedAt:"2026-08-13"},{id:"b",startedAt:"2026-08-13"}]});
+    const {request,env}=await signedIngest({system:{id:"machine",name:"Mac"},sessions:[{id:"a",startedAt:"2026-08-13"},{id:"b",startedAt:"2026-08-13"}]});
     const prepared=[];
     const DB={prepare(sql){prepared.push(sql); return {bind(...args){return {sql,args};}};},async batch(statements){expect(statements).toHaveLength(2);}};
-    const response=await onRequest({request,env:{DB,INGEST_TOKEN:token},params:{path:["ingest"]}});
+    const response=await onRequest({request,env:{DB,...env},params:{path:["ingest"]}});
     expect(prepared).toHaveLength(2);
     expect(await response.json()).toMatchObject({ok:true,accepted:2});
     expect(response.headers.get("Cache-Control")).toContain("no-store");
   });
 
+  test("reconciles timestamps inside the authenticated owner scope", async () => {
+    const signed=await signedIngest({systemId:"machine",sessions:[{id:"old",updatedAt:"2026-08-13T01:00:00Z"},{id:"new",updatedAt:"2026-08-13T02:00:00Z"}]});
+    let args, sql;
+    const DB={prepare(value){sql=value; return {bind(...values){args=values; return {async all(){return {results:[{id:"new"}]};}};}};}};
+    const response=await onRequest({request:signed.request,env:{DB,...signed.env},params:{path:["missing"]}});
+    expect(sql).toContain("s.skills_json IS NULL");
+    expect(args.slice(1)).toEqual(["wrick17@gmail.com","machine"]);
+    expect(await response.json()).toEqual({missing:["new"]});
+  });
+
   test("separates request errors from backend failures", async () => {
     const malformed=await signedIngest("{");
-    const bad=await onRequest({request:malformed.request,env:{INGEST_TOKEN:malformed.token},params:{path:["ingest"]}});
+    const bad=await onRequest({request:malformed.request,env:malformed.env,params:{path:["ingest"]}});
     expect(bad.status).toBe(400);
     const valid=await signedIngest({system:{id:"machine"},sessions:[]});
     const DB={prepare(sql){return {bind(...args){return {sql,args};}};},async batch(){throw new Error("schema missing");}};
-    const failed=await onRequest({request:valid.request,env:{DB,INGEST_TOKEN:valid.token},params:{path:["ingest"]}});
+    const failed=await onRequest({request:valid.request,env:{DB,...valid.env},params:{path:["ingest"]}});
     expect(failed.status).toBe(500);
     expect(await failed.json()).toEqual({error:"Request failed"});
     const unauthorized=await onRequest({request:new Request("https://codex-stats.pages.dev/api/me"),env:{},params:{path:["me"]}});
@@ -140,14 +177,14 @@ describe("ingest backend", () => {
 
   test("caps a single collector request at 1000 sessions", async () => {
     const signed=await signedIngest({system:{id:"machine"},sessions:Array.from({length:1001},(_,id)=>({id:String(id),startedAt:"2026-08-13"}))});
-    const response=await onRequest({request:signed.request,env:{INGEST_TOKEN:signed.token},params:{path:["ingest"]}});
+    const response=await onRequest({request:signed.request,env:signed.env,params:{path:["ingest"]}});
     expect(response.status).toBe(400);
   });
 
   test("keeps the json_each binding below D1's string limit", async () => {
     const sessions=Array.from({length:250},(_,id)=>({id:String(id),startedAt:"2026-08-13",tools:{large:"x".repeat(8000)}}));
     const signed=await signedIngest({system:{id:"machine"},sessions});
-    const response=await onRequest({request:signed.request,env:{INGEST_TOKEN:signed.token},params:{path:["ingest"]}});
+    const response=await onRequest({request:signed.request,env:signed.env,params:{path:["ingest"]}});
     expect(response.status).toBe(413);
   });
 

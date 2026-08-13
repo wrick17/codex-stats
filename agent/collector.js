@@ -6,8 +6,9 @@ import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 
 export const DEBOUNCE_MS = 180000;
 export const RETRY_MS = 300000;
-export const MAX_SESSIONS = 1000;
+export const BATCH_SIZE = 100;
 export const debounceDelay = (lastEvent, now = Date.now()) => Math.max(0, DEBOUNCE_MS - (now - lastEvent));
+export const selectMissing = (pending, ids) => { const missing=new Set(ids); return pending.filter(({session})=>missing.has(session.id)); };
 
 const PUBLIC_SESSION_KEYS = [
   "id", "startedAt", "endedAt", "cwdLabel", "repo", "branch", "source", "cliVersion", "model", "effort",
@@ -37,7 +38,7 @@ export function queueSession(state, session) {
   return true;
 }
 
-export function recoverSessions(state) {
+export function recoverSessions(state, reconcile=false) {
   let recovered = 0;
   for (const [path, entry] of Object.entries(state.files)) {
     const fileId = basename(path).match(/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/)?.[1];
@@ -48,7 +49,10 @@ export function recoverSessions(state) {
       entry.session = freshSession();
       recovered++;
     } else if (session.id === fileId) {
-      if (queueSession(state, session)) recovered++;
+      if (reconcile) {
+        const next=publicSession(session), fingerprint=JSON.stringify(next);
+        if (!state.pending[session.id]) { state.pending[session.id]={fingerprint,session:next,reconcile:true}; recovered++; }
+      } else if (queueSession(state, session)) recovered++;
     } else if (!state.synced[fileId] && !state.pending[fileId]) {
       entry.offset = 0;
       entry.session = freshSession();
@@ -167,15 +171,8 @@ async function signature(token, timestamp, body) {
 
 async function post(url, body, token) {
   const timestamp = Date.now().toString();
-  const headers = { "Content-Type": "application/json", "X-Codex-Timestamp": timestamp, "X-Codex-Signature": await signature(token, timestamp, body) };
-  if (platform() !== "darwin") return fetch(url, { method: "POST", headers, body });
-  const process = Bun.spawn(["/usr/bin/curl", "--fail-with-body", "--silent", "--show-error", "-X", "POST",
-    "-H", "Content-Type: application/json", "-H", `X-Codex-Timestamp: ${timestamp}`, "-H", `X-Codex-Signature: ${headers["X-Codex-Signature"]}`,
-    "--data-binary", "@-", url], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-  process.stdin.write(body);
-  process.stdin.end();
-  const [exitCode, output, error] = await Promise.all([process.exited, new Response(process.stdout).text(), new Response(process.stderr).text()]);
-  return { ok: exitCode === 0, status: exitCode === 0 ? 200 : 500, text: async () => output || error };
+  const headers = { "Content-Type": "application/json", "X-Codex-Token":token, "X-Codex-Timestamp": timestamp, "X-Codex-Signature": await signature(token, timestamp, body) };
+  return fetch(url, { method: "POST", headers, body });
 }
 
 async function loadState(path) {
@@ -193,11 +190,11 @@ async function saveState(path, state) {
   await rename(temporary, path);
 }
 
-async function sync() {
+async function sync(reconcile=false) {
   const codexRoot = process.env.CODEX_HOME || join(homedir(), ".codex");
   const statePath = join(homedir(), ".codex-stats", "state.json");
   const state = await loadState(statePath);
-  let changed = recoverSessions(state);
+  let changed = recoverSessions(state,reconcile);
 
   for (const path of await jsonlFiles(codexRoot)) {
     const previous = state.files[path] || { offset: 0, session: freshSession() };
@@ -220,27 +217,55 @@ async function sync() {
   const endpoint = process.env.CODEX_STATS_URL || "https://codex-stats.pages.dev";
   const token = await collectorToken();
   if (!token) throw new Error("Set CODEX_STATS_TOKEN (or add codex-stats-ingest to macOS Keychain)");
-  if (pending.length > MAX_SESSIONS) throw new Error(`Pending session ceiling exceeded (${pending.length}/${MAX_SESSIONS})`);
   const id = await installationId(codexRoot);
   const system = { id, name: process.env.CODEX_STATS_SYSTEM || hostname(), hostname: hostname(), platform: platform(), arch: arch(), codexVersion: await codexVersion() };
-  const body = JSON.stringify({ system, sessions: pending.map(({ session }) => session) });
-  const response = await post(`${endpoint.replace(/\/$/, "")}/api/ingest`, body, token);
-  if (!response.ok) throw new Error(`Sync failed (${response.status}): ${await response.text()}`);
-  for (const { fingerprint, session } of pending) {
-    state.synced[session.id] = fingerprint;
-    delete state.pending[session.id];
+  const base=endpoint.replace(/\/$/,"");
+  let uploaded=0, current=0;
+  for (let offset=0;offset<pending.length;offset+=BATCH_SIZE) {
+    const batch=pending.slice(offset,offset+BATCH_SIZE);
+    const historical=batch.filter((entry)=>entry.reconcile), required=batch.filter((entry)=>!entry.reconcile);
+    if (historical.length) {
+      const manifest=JSON.stringify({systemId:id,sessions:historical.map(({session})=>({id:session.id,updatedAt:session.endedAt||session.startedAt}))});
+      const check=await post(`${base}/api/missing`,manifest,token);
+      if (!check.ok) throw new Error(`Reconciliation failed (${check.status}): ${await check.text()}`);
+      required.push(...selectMissing(historical,JSON.parse(await check.text()).missing||[]));
+    }
+    if (required.length) {
+      const body=JSON.stringify({system,sessions:required.map(({session})=>session)});
+      const response=await post(`${base}/api/ingest`,body,token);
+      if (!response.ok) throw new Error(`Sync failed (${response.status}): ${await response.text()}`);
+    }
+    uploaded+=required.length;
+    current+=batch.length-required.length;
+    for (const {fingerprint,session} of batch) {
+      state.synced[session.id]=fingerprint;
+      delete state.pending[session.id];
+    }
+    await saveState(statePath,state);
   }
-  await saveState(statePath, state);
-  console.log(`codex-stats: synced ${pending.length} sessions${changed < pending.length ? " including retries" : ""}`);
+  console.log(`codex-stats: synced ${uploaded} sessions${current ? ` (${current} already current)` : changed<pending.length ? " including retries" : ""}`);
+}
+
+async function checkCredential() {
+  const root=process.env.CODEX_HOME||join(homedir(),".codex"), token=await collectorToken();
+  if (!token) return 2;
+  const body=JSON.stringify({systemId:await installationId(root),sessions:[]});
+  try {
+    const response=await post(`${(process.env.CODEX_STATS_URL||"https://codex-stats.pages.dev").replace(/\/$/,"")}/api/missing`,body,token);
+    if (response.ok) return 0;
+    return response.status===401 ? 2 : 1;
+  } catch { return 1; }
 }
 
 async function main() {
-  if (!process.argv.includes("--watch")) return sync();
+  if (process.argv.includes("--check")) { process.exitCode=await checkCredential(); return; }
+  if (!process.argv.includes("--watch")) return sync(true);
   const root = process.env.CODEX_HOME || join(homedir(), ".codex");
   let timer = null;
   let lastEvent = 0;
   let syncing = false;
   let rerun = false;
+  let initial = true;
   const arm = (delay) => {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => { timer = null; void run(); }, delay);
@@ -249,7 +274,7 @@ async function main() {
     if (syncing) { rerun = true; return; }
     syncing = true;
     let failed = false;
-    try { await sync(); }
+    try { await sync(initial); initial=false; }
     catch (error) { failed = true; console.error(`codex-stats: ${error.message}`); }
     finally {
       syncing = false;
