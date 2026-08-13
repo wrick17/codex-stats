@@ -3,10 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:functions": "wrangler pages functions build --outdir .tmp/functions-build",
     "dev": "wrangler pages dev public",
-    "deploy": "wrangler pages deploy",
     "db:local": "wrangler d1 migrations apply codex-stats --local",
-    "db:remote": "wrangler d1 migrations apply codex-stats --remote",
     "test": "bun test"
   },
   "dependencies": {

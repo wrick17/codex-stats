@@ -1,14 +1,69 @@
 #!/usr/bin/env bun
 import { homedir, hostname, platform, arch } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { watch } from "node:fs";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+
+export const DEBOUNCE_MS = 180000;
+export const RETRY_MS = 300000;
+export const MAX_SESSIONS = 1000;
+export const debounceDelay = (lastEvent, now = Date.now()) => Math.max(0, DEBOUNCE_MS - (now - lastEvent));
+
+const PUBLIC_SESSION_KEYS = [
+  "id", "startedAt", "endedAt", "cwdLabel", "repo", "branch", "source", "cliVersion", "model", "effort",
+  "status", "inputTokens", "cachedInputTokens", "cacheWriteTokens", "outputTokens", "reasoningTokens", "totalTokens",
+  "durationMs", "userMessages", "assistantMessages", "turnCount", "toolCount", "errorCount", "subagentCount", "tools", "skills",
+];
+
+export const publicSession = (session) => ({
+  ...Object.fromEntries(PUBLIC_SESSION_KEYS.map((key) => [key, session[key]])),
+  skills: session.skills || {},
+});
+
+export function skillReads(input) {
+  if (typeof input !== "string") return [];
+  const skills = new Set();
+  const directRead = /\brtk\s+(?:proxy\s+)?(?:cat\b|sed\b[^;&|\n]{0,120})[^;&|\n]*?\/skills\/([^/"'\s;|&`]+)\/SKILL\.md\b/g;
+  for (const match of input.matchAll(directRead)) skills.add(match[1]);
+  return [...skills];
+}
+
+export function queueSession(state, session) {
+  if (!session.id || !session.startedAt) return false;
+  const next = publicSession(session);
+  const nextFingerprint = JSON.stringify(next);
+  if ((state.pending[session.id]?.fingerprint || state.synced[session.id]) === nextFingerprint) return false;
+  state.pending[session.id] = { fingerprint: nextFingerprint, session: next };
+  return true;
+}
+
+export function recoverSessions(state) {
+  let recovered = 0;
+  for (const [path, entry] of Object.entries(state.files)) {
+    const fileId = basename(path).match(/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/)?.[1];
+    const session = entry?.session;
+    if (!fileId || !session) continue;
+    if (!Object.hasOwn(session, "skills")) {
+      entry.offset = 0;
+      entry.session = freshSession();
+      recovered++;
+    } else if (session.id === fileId) {
+      if (queueSession(state, session)) recovered++;
+    } else if (!state.synced[fileId] && !state.pending[fileId]) {
+      entry.offset = 0;
+      entry.session = freshSession();
+      recovered++;
+    }
+  }
+  return recovered;
+}
 
 export const freshSession = () => ({
   id: null, startedAt: null, endedAt: null, cwdLabel: null, repo: null, branch: null, source: null,
   cliVersion: null, model: null, effort: null, status: "active", inputTokens: 0, cachedInputTokens: 0,
   cacheWriteTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0, durationMs: 0,
   userMessages: 0, assistantMessages: 0, turnCount: 0, toolCount: 0, errorCount: 0, subagentCount: 0,
-  tools: {}, _firstTs: null, _lastTs: null, _turns: {}, _subagents: {},
+  tools: {}, skills: {}, _firstTs: null, _lastTs: null, _turns: {}, _subagents: {},
 });
 
 const noteTime = (session, timestamp) => {
@@ -24,14 +79,16 @@ export function parseLine(session, line) {
   const payload = record.payload || {};
 
   if (record.type === "session_meta") {
-    session.id = payload.id || payload.session_id || session.id;
-    session.startedAt = payload.timestamp || record.timestamp || session.startedAt;
-    session.source = payload.source || payload.originator || session.source;
-    session.cliVersion = payload.cli_version || session.cliVersion;
-    session.branch = payload.git?.branch || session.branch;
-    if (payload.cwd) {
-      session.cwdLabel = basename(payload.cwd);
-      session.repo = basename(payload.git?.repository_url || payload.cwd).replace(/\.git$/, "");
+    if (!session.id) {
+      session.id = payload.id || payload.session_id || null;
+      session.startedAt = payload.timestamp || record.timestamp || session.startedAt;
+      session.source = payload.thread_source || (typeof payload.source === "string" ? payload.source : payload.originator) || session.source;
+      session.cliVersion = payload.cli_version || session.cliVersion;
+      session.branch = payload.git?.branch || session.branch;
+      if (payload.cwd) {
+        session.cwdLabel = basename(payload.cwd);
+        session.repo = basename(payload.git?.repository_url || payload.cwd).replace(/\.git$/, "");
+      }
     }
   } else if (record.type === "turn_context") {
     session.model = payload.model || session.model;
@@ -53,8 +110,11 @@ export function parseLine(session, line) {
       session.totalTokens = Number(usage.total_tokens || 0);
     }
     if (payload.type === "sub_agent_activity" && payload.agent_thread_id) session._subagents[payload.agent_thread_id] = 1;
-    if (payload.type === "mcp_tool_call_end" && payload.result?.isError) session.errorCount++;
+    if (payload.type === "mcp_tool_call_end" && (payload.result?.isError || payload.result?.Err)) session.errorCount++;
   } else if (record.type === "response_item") {
+    if (payload.type === "custom_tool_call" && payload.name === "exec") {
+      for (const skill of skillReads(payload.input)) session.skills[skill] = (session.skills[skill] || 0) + 1;
+    }
     if (["function_call", "custom_tool_call", "local_shell_call", "web_search_call"].includes(payload.type)) {
       const name = payload.name || payload.action?.type || payload.type;
       session.toolCount++;
@@ -118,12 +178,26 @@ async function post(url, body, token) {
   return { ok: exitCode === 0, status: exitCode === 0 ? 200 : 500, text: async () => output || error };
 }
 
+async function loadState(path) {
+  let saved;
+  try { saved = JSON.parse(await readFile(path, "utf8")); } catch { saved = {}; }
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)) saved = {};
+  const object = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return { files: object(saved.files), synced: object(saved.synced), pending: object(saved.pending) };
+}
+
+async function saveState(path, state) {
+  const temporary = `${path}.${process.pid}.tmp`;
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  await writeFile(temporary, JSON.stringify(state), { mode: 0o600 });
+  await rename(temporary, path);
+}
+
 async function sync() {
   const codexRoot = process.env.CODEX_HOME || join(homedir(), ".codex");
-  const stateDir = join(homedir(), ".codex-stats");
-  const statePath = join(stateDir, "state.json");
-  const state = JSON.parse(await readFile(statePath, "utf8").catch(() => '{"files":{}}'));
-  const changed = [];
+  const statePath = join(homedir(), ".codex-stats", "state.json");
+  const state = await loadState(statePath);
+  let changed = recoverSessions(state);
 
   for (const path of await jsonlFiles(codexRoot)) {
     const previous = state.files[path] || { offset: 0, session: freshSession() };
@@ -137,22 +211,66 @@ async function sync() {
     for (const line of new TextDecoder().decode(complete).split("\n")) if (line) parseLine(previous.session, line);
     previous.offset += complete.byteLength;
     state.files[path] = previous;
-    if (previous.session.id && previous.session.startedAt) changed.push(previous.session);
+    if (queueSession(state, previous.session)) changed++;
   }
 
-  if (!changed.length) return console.log("codex-stats: nothing new");
+  await saveState(statePath, state);
+  const pending = Object.values(state.pending).filter((entry) => entry?.session?.id && entry.fingerprint);
+  if (!pending.length) return console.log("codex-stats: nothing new");
   const endpoint = process.env.CODEX_STATS_URL || "https://codex-stats.pages.dev";
   const token = await collectorToken();
   if (!token) throw new Error("Set CODEX_STATS_TOKEN (or add codex-stats-ingest to macOS Keychain)");
+  if (pending.length > MAX_SESSIONS) throw new Error(`Pending session ceiling exceeded (${pending.length}/${MAX_SESSIONS})`);
   const id = await installationId(codexRoot);
-  for (let i = 0; i < changed.length; i += 200) {
-    const body = JSON.stringify({ system: { id, name: process.env.CODEX_STATS_SYSTEM || hostname(), hostname: hostname(), platform: platform(), arch: arch(), codexVersion: await codexVersion() }, sessions: changed.slice(i, i + 200) });
-    const response = await post(`${endpoint.replace(/\/$/, "")}/api/ingest`, body, token);
-    if (!response.ok) throw new Error(`Sync failed (${response.status}): ${await response.text()}`);
+  const system = { id, name: process.env.CODEX_STATS_SYSTEM || hostname(), hostname: hostname(), platform: platform(), arch: arch(), codexVersion: await codexVersion() };
+  const body = JSON.stringify({ system, sessions: pending.map(({ session }) => session) });
+  const response = await post(`${endpoint.replace(/\/$/, "")}/api/ingest`, body, token);
+  if (!response.ok) throw new Error(`Sync failed (${response.status}): ${await response.text()}`);
+  for (const { fingerprint, session } of pending) {
+    state.synced[session.id] = fingerprint;
+    delete state.pending[session.id];
   }
-  await mkdir(stateDir, { recursive: true });
-  await writeFile(statePath, JSON.stringify(state));
-  console.log(`codex-stats: synced ${changed.length} sessions`);
+  await saveState(statePath, state);
+  console.log(`codex-stats: synced ${pending.length} sessions${changed < pending.length ? " including retries" : ""}`);
 }
 
-if (import.meta.main) sync().catch((error) => { console.error(error.message); process.exitCode = 1; });
+async function main() {
+  if (!process.argv.includes("--watch")) return sync();
+  const root = process.env.CODEX_HOME || join(homedir(), ".codex");
+  let timer = null;
+  let lastEvent = 0;
+  let syncing = false;
+  let rerun = false;
+  const arm = (delay) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => { timer = null; void run(); }, delay);
+  };
+  const run = async () => {
+    if (syncing) { rerun = true; return; }
+    syncing = true;
+    let failed = false;
+    try { await sync(); }
+    catch (error) { failed = true; console.error(`codex-stats: ${error.message}`); }
+    finally {
+      syncing = false;
+      if (rerun) { rerun = false; arm(debounceDelay(lastEvent)); }
+      else if (failed && !timer) arm(RETRY_MS);
+    }
+  };
+  const schedule = () => {
+    lastEvent = Date.now();
+    arm(DEBOUNCE_MS);
+  };
+  const watchers = ["sessions", "archived_sessions"].map((name) => {
+    try { return watch(join(root, name), { recursive: true }, (_event, file) => { if (!file || file.endsWith(".jsonl")) schedule(); }); }
+    catch { return null; }
+  }).filter(Boolean);
+  if (!watchers.length) throw new Error(`No Codex session directories found under ${root}`);
+  await run();
+  console.log("codex-stats: watching for Codex activity (3 minute debounce)");
+  const stop = () => { if (timer) clearTimeout(timer); watchers.forEach((watcher) => watcher.close()); process.exit(0); };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+}
+
+if (import.meta.main) main().catch((error) => { console.error(error.message); process.exitCode = 1; });

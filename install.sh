@@ -39,13 +39,14 @@ cat >"$launch_agent" <<EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.codex-stats.sync</string>
-  <key>ProgramArguments</key><array><string>$(xml_escape "$bun_bin")</string><string>$(xml_escape "$install_dir/collector.js")</string></array>
+  <key>ProgramArguments</key><array><string>$(xml_escape "$bun_bin")</string><string>$(xml_escape "$install_dir/collector.js")</string><string>--watch</string></array>
   <key>EnvironmentVariables</key><dict>
     <key>CODEX_STATS_URL</key><string>$(xml_escape "$endpoint")</string>
     <key>CODEX_STATS_SYSTEM</key><string>$(xml_escape "$system_name")</string>
   </dict>
-  <key>StartInterval</key><integer>300</integer>
   <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
   <key>StandardOutPath</key><string>$(xml_escape "$log_file")</string>
   <key>StandardErrorPath</key><string>$(xml_escape "$log_file")</string>
 </dict></plist>
@@ -58,4 +59,4 @@ launchctl bootout "gui/$uid" "$launch_agent" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$uid" "$launch_agent"
 launchctl kickstart -k "gui/$uid/com.codex-stats.sync"
 
-echo "Codex Stats installed for '$system_name'. It will sync now and every five minutes."
+echo "Codex Stats installed for '$system_name'. It will sync three minutes after Codex activity settles."

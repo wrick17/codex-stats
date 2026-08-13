@@ -1,0 +1,46 @@
+name: Backend release
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-stats-production
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: Test, build, and migrate D1
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Test
+        run: bun test
+
+      - name: Build Pages Functions
+        run: bun run build:functions
+
+      - name: Apply production D1 migrations
+        run: bunx wrangler d1 migrations apply codex-stats --remote
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Deploy Cloudflare Pages
+        run: bunx wrangler pages deploy public --project-name codex-stats --branch master --commit-dirty=true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

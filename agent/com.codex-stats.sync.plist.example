@@ -4,14 +4,15 @@
 <dict>
   <key>Label</key><string>com.codex-stats.sync</string>
   <key>ProgramArguments</key>
-  <array><string>/opt/homebrew/bin/bun</string><string>REPLACE_WITH_REPO_PATH/agent/collector.js</string></array>
+  <array><string>/opt/homebrew/bin/bun</string><string>REPLACE_WITH_REPO_PATH/agent/collector.js</string><string>--watch</string></array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>CODEX_STATS_URL</key><string>https://codex-stats.pages.dev</string>
     <key>CODEX_STATS_SYSTEM</key><string>REPLACE_WITH_SYSTEM_NAME</string>
   </dict>
-  <key>StartInterval</key><integer>300</integer>
   <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
   <key>StandardOutPath</key><string>/tmp/codex-stats.log</string>
   <key>StandardErrorPath</key><string>/tmp/codex-stats.log</string>
 </dict>
