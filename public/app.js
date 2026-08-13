@@ -37,12 +37,6 @@ function dailyWindow(rows, window, costs = {}, dailyModels = {}) {
 
 const tooltipData=(row)=>`data-tooltip="day" data-tooltip-kind="trend" data-date="${row.day}" data-tokens="${Number(row.tokens||0)}" data-sessions="${Number(row.sessions||0)}" data-cost="${Number(row.estimated_cost||0)}" data-models="${esc(JSON.stringify(row.models||[]))}"`;
 
-function visualAverage(rows,key,radius) {
-  const values=rows.map(row=>Number(row[key]||0)), smoothed=[...values]; let start=0;
-  while(start<values.length){ while(start<values.length&&!values[start]) start++; let end=start; while(end<values.length&&values[end]) end++; for(let i=start;i<end;i++){ let total=0,weightTotal=0; for(let offset=-radius;offset<=radius;offset++){ const index=i+offset; if(index<start||index>=end) continue; const weight=radius+1-Math.abs(offset); total+=values[index]*weight; weightTotal+=weight; } smoothed[i]=total/weightTotal; } start=end; }
-  return smoothed;
-}
-
 function cardinalPath(points,key) {
   if(!points.length) return "";
   const value=(n)=>Number.isFinite(n)?Math.round(n*1000)/1000:0, clamp=(n,min,max)=>Math.min(max,Math.max(min,n));
@@ -53,7 +47,7 @@ function cardinalPath(points,key) {
 
 function renderTrend(rows, area, lifetime) {
   if (!rows.length) return $("trend").innerHTML = '<p class="empty">No activity in this window.</p>';
-  const width = 1000, height = 250, pad = 30, radius=area?(lifetime?7:3):0, tokenValues=radius?visualAverage(rows,"tokens",radius):rows.map(d=>Number(d.tokens)), sessionValues=radius?visualAverage(rows,"sessions",radius):rows.map(d=>Number(d.sessions)), max = Math.max(...tokenValues, 1), sessionMax = Math.max(...sessionValues, 1), step = (width - pad * 2) / rows.length, barWidth = Math.max(.75, step * .64);
+  const width = 1000, height = 250, pad = 30, tokenValues=rows.map(d=>Number(d.tokens)), sessionValues=rows.map(d=>Number(d.sessions)), max = Math.max(...tokenValues, 1), sessionMax = Math.max(...sessionValues, 1), step = (width - pad * 2) / rows.length, barWidth = Math.max(.75, step * .64);
   const points=rows.map((d,i)=>({x:pad+(i+.5)*step,tokenY:height-pad-tokenValues[i]/max*(height-pad*2),sessionY:height-pad-sessionValues[i]/sessionMax*(height-pad*2)}));
   const marks = rows.map((d,i) => { const p=points[i], h=height-pad-p.tokenY, x=p.x-barWidth/2, sessions=Number(d.sessions); return `<g class="trend-day">${area?"":`<rect class="token-bar" x="${x}" y="${p.tokenY}" width="${barWidth}" height="${h}" rx="${Math.min(2,barWidth/2)}"/><circle class="session-dot" cx="${p.x}" cy="${height-pad-(sessions/sessionMax)*44}" r="3"/>`}<rect class="trend-hit" x="${pad+i*step}" y="${pad}" width="${step}" height="${height-pad*2}" ${tooltipData(d)}/></g>`; }).join("");
   const path=(key)=>cardinalPath(points,key), fill=(key)=>`${path(key)} L ${points.at(-1).x} ${height-pad} L ${points[0].x} ${height-pad} Z`;

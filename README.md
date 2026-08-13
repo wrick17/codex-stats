@@ -23,6 +23,8 @@ Prerequisites: macOS, Homebrew, Codex run at least once, and access to the allow
 
 After server-side Shoo verification, the installer stores a user-bound collector credential in that Mac's Keychain, uses the Mac's Computer Name as its dashboard label, installs Bun through Homebrew if needed, and creates a LaunchAgent under `~/Library/LaunchAgents`. Rerun the same one-liner at any time to update or repair the collector. To override the label, use `curl -fsSL https://raw.githubusercontent.com/wrick17/codex-stats/master/install.sh | CODEX_STATS_SYSTEM='My Mac' bash`.
 
+Open <http://127.0.0.1:47821> on the Mac to see the collector status or trigger an immediate full reconciliation. Manual sync checks every discovered historical session and uploads only records missing or older on the server.
+
 The installer is idempotent: rerun the same line to update the collector. It uses Homebrew's stable Bun path and a per-user LaunchAgent with `RunAtLoad` and `KeepAlive`, so it restarts after failure and resumes at login after a reboot. On first enrollment it uploads historical aggregates; on later starts or reinstalls it sends timestamps first and uploads only sessions missing or older on the server. A native filesystem watcher waits three minutes after the latest Codex session change and retries pending failures every five minutes; idle Macs send nothing.
 
 The dashboard never polls; it loads only when opened, filtered, or manually refreshed. Its API-equivalent cost estimate uses OpenAI's standard token rates, fetched server-side at most once per active day, cached in D1, and reused if the pricing source is temporarily unavailable.

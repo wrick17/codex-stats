@@ -7,6 +7,7 @@ import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/pro
 export const DEBOUNCE_MS = 180000;
 export const RETRY_MS = 300000;
 export const BATCH_SIZE = 100;
+export const DASHBOARD_PORT = 47821;
 export const debounceDelay = (lastEvent, now = Date.now()) => Math.max(0, DEBOUNCE_MS - (now - lastEvent));
 export const selectMissing = (pending, ids) => { const missing=new Set(ids); return pending.filter(({session})=>missing.has(session.id)); };
 
@@ -134,7 +135,7 @@ export function parseLine(session, line) {
   return session;
 }
 
-async function jsonlFiles(root) {
+export async function jsonlFiles(root) {
   const found = [];
   async function walk(dir) {
     for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
@@ -206,7 +207,8 @@ async function sync(reconcile=false) {
   const state = await loadState(statePath);
   let changed = recoverSessions(state,reconcile);
 
-  for (const path of await jsonlFiles(codexRoot)) {
+  const files=await jsonlFiles(codexRoot);
+  for (const path of files) {
     const previous = state.files[path] || { offset: 0, session: freshSession() };
     const file = Bun.file(path);
     if (file.size < previous.offset) { previous.offset = 0; previous.session = freshSession(); }
@@ -223,7 +225,11 @@ async function sync(reconcile=false) {
 
   await saveState(statePath, state);
   const pending = Object.values(state.pending).filter((entry) => entry?.session?.id && entry.fingerprint);
-  if (!pending.length) return console.log("codex-stats: nothing new");
+  const parsed=Object.values(state.files).filter((entry)=>entry?.session?.id).length;
+  if (!pending.length) {
+    console.log("codex-stats: nothing new");
+    return {found:files.length,parsed,uploaded:0,current:parsed};
+  }
   const endpoint = process.env.CODEX_STATS_URL || "https://codex-stats.pages.dev";
   const token = await collectorToken();
   if (!token) throw new Error("Set CODEX_STATS_TOKEN (or add codex-stats-ingest to macOS Keychain)");
@@ -254,6 +260,36 @@ async function sync(reconcile=false) {
     await saveState(statePath,state);
   }
   console.log(`codex-stats: synced ${uploaded} sessions${current ? ` (${current} already current)` : changed<pending.length ? " including retries" : ""}`);
+  return {found:files.length,parsed,uploaded,current};
+}
+
+const html = (value) => String(value??"").replace(/[&<>"']/g,(char)=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char]);
+const localTime = (value) => value ? new Date(value).toLocaleString() : "Not yet";
+
+export function localDashboardPage(status,nonce) {
+  const result=status.result||{};
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex Stats · Local</title><style>
+  :root{color-scheme:dark;--ink:#e9e4d8;--muted:#8c928d;--line:#30352f;--green:#a9c181;--amber:#e0a56b;--red:#df7d76;background:#101210;font-family:SFMono-Regular,Menlo,Monaco,monospace}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 80% 0,#20271e 0,transparent 35%),#101210;color:var(--ink)}main{width:min(840px,calc(100% - 32px));margin:clamp(36px,9vh,100px) auto}header{border-top:1px solid var(--line);padding-top:18px;display:flex;justify-content:space-between;gap:24px;align-items:start}.eyebrow{color:var(--amber);font-size:11px;letter-spacing:.16em;text-transform:uppercase}h1{font-family:"Iowan Old Style",Georgia,serif;font-weight:500;font-size:clamp(34px,7vw,68px);line-height:.94;margin:12px 0}.state{display:flex;align-items:center;gap:9px;text-transform:uppercase;font-size:12px}.state i{width:9px;height:9px;border-radius:50%;background:${status.phase==="error"?"var(--red)":status.phase==="syncing"?"var(--amber)":"var(--green)"};box-shadow:0 0 14px currentColor}.grid{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);margin:38px 0}.cell{padding:20px;min-height:112px;border-right:1px solid var(--line)}.cell:last-child{border:0}.cell span{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.12em}.cell strong{display:block;font-size:17px;margin-top:17px;font-weight:500;overflow-wrap:anywhere}.wide{display:grid;grid-template-columns:1fr auto;gap:24px;align-items:end;padding:18px 0;border-bottom:1px solid var(--line)}.wide p{margin:7px 0 0;color:var(--muted);font-size:12px;overflow-wrap:anywhere}.actions{display:flex;gap:10px}.button,button{appearance:none;border:1px solid var(--line);background:#191c18;color:var(--ink);padding:12px 16px;font:inherit;font-size:12px;text-decoration:none;cursor:pointer}.primary{background:var(--green);border-color:var(--green);color:#11150f;font-weight:700}.error{color:var(--red);margin:18px 0;font-size:12px}footer{margin-top:32px;color:var(--muted);font-size:10px;letter-spacing:.08em;text-transform:uppercase}@media(max-width:620px){header,.wide{display:block}.state{margin-top:18px}.grid{grid-template-columns:1fr 1fr}.cell:nth-child(2){border-right:0}.cell{border-bottom:1px solid var(--line);min-height:94px}.actions{margin-top:18px}.button,button{flex:1}}
+  </style></head><body><main><header><div><div class="eyebrow">Loopback control panel</div><h1>Codex Stats</h1></div><div class="state"><i></i>${html(status.phase)}</div></header>
+  <section class="grid"><div class="cell"><span>Files found</span><strong>${html(result.found??"—")}</strong></div><div class="cell"><span>Sessions parsed</span><strong>${html(result.parsed??"—")}</strong></div><div class="cell"><span>Last upload</span><strong>${html(result.uploaded??"—")}</strong></div><div class="cell"><span>Already current</span><strong>${html(result.current??"—")}</strong></div></section>
+  <section class="wide"><div><div class="eyebrow">Last successful check</div><p>${html(localTime(status.lastSuccessAt))}</p></div><div class="actions"><a class="button" href="/">Refresh</a><form method="post" action="/sync"><input type="hidden" name="csrf" value="${html(nonce)}"><button class="primary" type="submit">Sync now</button></form></div></section>
+  <section class="wide"><div><div class="eyebrow">Machine</div><p>${html(status.system)}</p></div><div><div class="eyebrow">Next automatic sync</div><p>${html(localTime(status.nextRunAt))}</p></div></section>
+  <section class="wide"><div><div class="eyebrow">Codex home</div><p>${html(status.root)}</p></div></section>
+  <section class="wide"><div><div class="eyebrow">Backend</div><p>${html(status.endpoint)}</p></div></section>${status.error?`<p class="error">${html(status.error)}</p>`:""}
+  <footer>127.0.0.1 only · manual refresh · no polling</footer></main></body></html>`;
+}
+
+export async function localDashboardResponse(request,status,nonce,syncNow,port=DASHBOARD_PORT) {
+  const url=new URL(request.url), allowed=new Set([`http://127.0.0.1:${port}`,`http://localhost:${port}`]);
+  const headers={"Cache-Control":"no-store","Content-Security-Policy":"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'","X-Content-Type-Options":"nosniff"};
+  if (!allowed.has(url.origin)) return new Response("Forbidden",{status:403,headers});
+  if (request.method==="GET"&&url.pathname==="/") return new Response(localDashboardPage(status,nonce),{headers:{...headers,"Content-Type":"text/html; charset=utf-8"}});
+  if (request.method==="POST"&&url.pathname==="/sync") {
+    if (!allowed.has(request.headers.get("Origin"))||!request.headers.get("Content-Type")?.startsWith("application/x-www-form-urlencoded")||(await request.formData()).get("csrf")!==nonce) return new Response("Forbidden",{status:403,headers});
+    await syncNow();
+    return new Response(null,{status:303,headers:{...headers,Location:"/"}});
+  }
+  return new Response("Not found",{status:404,headers});
 }
 
 async function checkCredential() {
@@ -276,18 +312,24 @@ async function main() {
   let syncing = false;
   let rerun = false;
   let initial = true;
+  const endpoint=process.env.CODEX_STATS_URL||"https://codex-stats.pages.dev", system=process.env.CODEX_STATS_SYSTEM||hostname();
+  const port=Number(process.env.CODEX_STATS_PORT)||DASHBOARD_PORT, nonce=crypto.randomUUID();
+  const status={phase:"starting",system,endpoint,root,lastSuccessAt:null,nextRunAt:null,result:null,error:null};
   const arm = (delay) => {
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => { timer = null; void run(); }, delay);
+    status.nextRunAt=new Date(Date.now()+delay).toISOString();
+    timer = setTimeout(() => { timer = null; status.nextRunAt=null; void run(); }, delay);
   };
-  const run = async () => {
+  const run = async (reconcile=initial) => {
     if (syncing) { rerun = true; return; }
     syncing = true;
+    status.phase="syncing"; status.error=null; status.nextRunAt=null;
     let failed = false;
-    try { await sync(initial); initial=false; }
-    catch (error) { failed = true; console.error(`codex-stats: ${error.message}`); }
+    try { status.result=await sync(reconcile); status.lastSuccessAt=new Date().toISOString(); initial=false; }
+    catch (error) { failed = true; status.error=error.message; console.error(`codex-stats: ${error.message}`); }
     finally {
       syncing = false;
+      status.phase=failed?"error":"watching";
       if (rerun) { rerun = false; arm(debounceDelay(lastEvent)); }
       else if (failed && !timer) arm(RETRY_MS);
     }
@@ -303,7 +345,12 @@ async function main() {
   if (!watchers.length) throw new Error(`No Codex session directories found under ${root}`);
   await run();
   console.log("codex-stats: watching for Codex activity (3 minute debounce)");
-  const stop = () => { if (timer) clearTimeout(timer); watchers.forEach((watcher) => watcher.close()); process.exit(0); };
+  let dashboard;
+  try {
+    dashboard=Bun.serve({hostname:"127.0.0.1",port,fetch:(request)=>localDashboardResponse(request,status,nonce,async()=>{ if(timer){clearTimeout(timer);timer=null;} await run(true); },port)});
+    console.log(`codex-stats: local dashboard http://127.0.0.1:${port}`);
+  } catch(error) { console.error(`codex-stats: local dashboard unavailable: ${error.message}`); }
+  const stop = () => { if (timer) clearTimeout(timer); watchers.forEach((watcher) => watcher.close()); dashboard?.stop(); process.exit(0); };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 }

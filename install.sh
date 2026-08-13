@@ -8,6 +8,11 @@ install_dir="$HOME/.local/share/codex-stats"
 launch_agent="$HOME/Library/LaunchAgents/com.codex-stats.sync.plist"
 log_file="$HOME/Library/Logs/codex-stats.log"
 endpoint="${CODEX_STATS_URL:-https://codex-stats.pages.dev}"
+dashboard_port="${CODEX_STATS_PORT:-47821}"
+codex_home="${CODEX_HOME:-$HOME/.codex}"
+
+[[ "$dashboard_port" =~ ^[0-9]+$ ]] && (( dashboard_port > 0 && dashboard_port < 65536 )) || { echo "CODEX_STATS_PORT must be between 1 and 65535." >&2; exit 1; }
+[[ "$codex_home" == /* ]] && [[ -d "$codex_home/sessions" || -d "$codex_home/archived_sessions" ]] || { echo "No Codex sessions found under '$codex_home'. Set CODEX_HOME to the correct absolute path." >&2; exit 1; }
 
 command -v brew >/dev/null || { echo "Homebrew is required: https://brew.sh" >&2; exit 1; }
 brew list bun >/dev/null 2>&1 || brew install bun </dev/null
@@ -22,7 +27,7 @@ install -m 755 "$tmp_dir/collector.js" "$install_dir/collector.js"
 install -m 755 "$tmp_dir/enroll.js" "$install_dir/enroll.js"
 
 credential="$(security find-generic-password -a codex-stats -s codex-stats-ingest -w 2>/dev/null || true)"
-if [[ "$credential" == v1.* ]] && CODEX_STATS_URL="$endpoint" "$bun_bin" "$install_dir/collector.js" --check; then
+if [[ "$credential" == v1.* ]] && CODEX_HOME="$codex_home" CODEX_STATS_URL="$endpoint" "$bun_bin" "$install_dir/collector.js" --check; then
   :
 else
   check_status=$?
@@ -44,6 +49,8 @@ cat >"$launch_agent" <<EOF
   <key>EnvironmentVariables</key><dict>
     <key>CODEX_STATS_URL</key><string>$(xml_escape "$endpoint")</string>
     <key>CODEX_STATS_SYSTEM</key><string>$(xml_escape "$system_name")</string>
+    <key>CODEX_STATS_PORT</key><string>$(xml_escape "$dashboard_port")</string>
+    <key>CODEX_HOME</key><string>$(xml_escape "$codex_home")</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -60,4 +67,6 @@ launchctl bootout "gui/$uid" "$launch_agent" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$uid" "$launch_agent"
 launchctl kickstart -k "gui/$uid/com.codex-stats.sync"
 
-echo "Codex Stats installed for '$system_name'. It will sync three minutes after Codex activity settles."
+echo "Codex Stats installed for '$system_name'."
+echo "Local status and manual sync: http://127.0.0.1:$dashboard_port"
+echo "Automatic sync runs three minutes after Codex activity settles."

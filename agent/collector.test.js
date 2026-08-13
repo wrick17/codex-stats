@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { BATCH_SIZE, debounceDelay, freshSession, parseLine, publicSession, queueSession, recoverSessions, selectMissing, skillReads } from "./collector.js";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BATCH_SIZE, DASHBOARD_PORT, debounceDelay, freshSession, jsonlFiles, localDashboardResponse, parseLine, publicSession, queueSession, recoverSessions, selectMissing, skillReads } from "./collector.js";
 
 describe("collector", () => {
   test("keeps only aggregate session metadata and latest cumulative usage", () => {
@@ -29,9 +32,33 @@ describe("collector", () => {
     expect(BATCH_SIZE).toBe(100);
   });
 
+  test("serves loopback status and protects manual sync", async () => {
+    const status={phase:"watching",system:"Test Mac",endpoint:"https://example.test",root:"/tmp/.codex",lastSuccessAt:null,nextRunAt:null,result:{found:12,parsed:12,uploaded:2,current:10},error:null};
+    let runs=0;
+    const request=(path,init)=>new Request(`http://127.0.0.1:${DASHBOARD_PORT}${path}`,init);
+    const page=await localDashboardResponse(request("/"),status,"secret",async()=>runs++);
+    expect(page.status).toBe(200);
+    expect(page.headers.get("Cache-Control")).toBe("no-store");
+    expect(await page.text()).toContain("Sessions parsed");
+    expect((await localDashboardResponse(request("/sync",{method:"POST",headers:{Origin:"https://evil.test"},body:new URLSearchParams({csrf:"secret"})}),status,"secret",async()=>runs++)).status).toBe(403);
+    expect((await localDashboardResponse(request("/sync",{method:"POST",headers:{Origin:`http://127.0.0.1:${DASHBOARD_PORT}`},body:new URLSearchParams({csrf:"secret"})}),status,"secret",async()=>runs++)).status).toBe(303);
+    expect(runs).toBe(1);
+  });
+
   test("uploads only sessions the owner-scoped backend reports missing", () => {
     const pending=["old","missing","changed"].map((id)=>({session:{id}}));
     expect(selectMissing(pending,["missing","changed"]).map(({session})=>session.id)).toEqual(["missing","changed"]);
+  });
+
+  test("discovers history in a custom Codex home", async () => {
+    const root=await mkdtemp(join(tmpdir(),"codex-stats-test-"));
+    try {
+      await mkdir(join(root,"sessions","2026"),{recursive:true});
+      await mkdir(join(root,"archived_sessions"),{recursive:true});
+      await writeFile(join(root,"sessions","2026","one.jsonl"),"{}\n");
+      await writeFile(join(root,"archived_sessions","two.jsonl"),"{}\n");
+      expect((await jsonlFiles(root)).map((path)=>path.slice(root.length+1)).sort()).toEqual(["archived_sessions/two.jsonl","sessions/2026/one.jsonl"]);
+    } finally { await rm(root,{recursive:true,force:true}); }
   });
 
   test("reconciles previously synced sessions after service start or reinstall", () => {

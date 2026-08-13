@@ -9,6 +9,8 @@
   <dict>
     <key>CODEX_STATS_URL</key><string>https://codex-stats.pages.dev</string>
     <key>CODEX_STATS_SYSTEM</key><string>REPLACE_WITH_SYSTEM_NAME</string>
+    <key>CODEX_STATS_PORT</key><string>47821</string>
+    <key>CODEX_HOME</key><string>REPLACE_WITH_HOME/.codex</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
