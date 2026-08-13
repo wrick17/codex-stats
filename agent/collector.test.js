@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BATCH_SIZE, DASHBOARD_PORT, debounceDelay, freshSession, jsonlFiles, localDashboardResponse, parseLine, publicSession, queueSession, recoverSessions, selectMissing, skillReads } from "./collector.js";
+import { ACTIVITY_SYNC_MS, BATCH_SIZE, DASHBOARD_PORT, activityDelay, freshSession, jsonlFiles, localDashboardResponse, parseLine, publicSession, queueReconcileBatch, queueSession, recoverSessions, selectMissing, skillReads } from "./collector.js";
 
 describe("collector", () => {
   test("keeps only aggregate session metadata and latest cumulative usage", () => {
@@ -26,9 +26,11 @@ describe("collector", () => {
     expect(queueSession(state, session)).toBe(true);
   });
 
-  test("debounces for three minutes and allows one bounded recovery request", () => {
-    expect(debounceDelay(1_000, 2_000)).toBe(179_000);
-    expect(debounceDelay(1_000, 200_000)).toBe(0);
+  test("syncs at most every three active minutes without postponing the timer", () => {
+    expect(activityDelay(null)).toBe(180_000);
+    expect(activityDelay("activity")).toBeNull();
+    expect(activityDelay("retry")).toBe(180_000);
+    expect(ACTIVITY_SYNC_MS).toBe(180_000);
     expect(BATCH_SIZE).toBe(100);
   });
 
@@ -48,6 +50,24 @@ describe("collector", () => {
   test("uploads only sessions the owner-scoped backend reports missing", () => {
     const pending=["old","missing","changed"].map((id)=>({session:{id}}));
     expect(selectMissing(pending,["missing","changed"]).map(({session})=>session.id)).toEqual(["missing","changed"]);
+  });
+
+  test("rotates bounded proactive reconciliation without replacing changed sessions", () => {
+    const session=(id)=>({...freshSession(),id,startedAt:"2026-01-01T00:00:00Z"});
+    const state={files:{a:{session:session("a")},b:{session:session("b")},c:{session:session("c")},stale:{session:session("stale")},duplicate:{session:session("a")}},synced:{},pending:{b:{fingerprint:"changed",session:session("b")}},reconcileCursor:0};
+    const files=["c","a","b","duplicate"];
+    expect(queueReconcileBatch(state,files,2)).toBe(2);
+    expect(state.pending.a.reconcile).toBe(true);
+    expect(state.pending.b).toMatchObject({fingerprint:"changed"});
+    expect(state.reconcileCursor).toBe(2);
+    state.pending={};
+    expect(queueReconcileBatch(state,files,2)).toBe(1);
+    expect(Object.keys(state.pending)).toEqual(["c"]);
+    state.pending={a:{fingerprint:"old",session:session("a"),reconcile:true}};
+    state.reconcileCursor=Infinity;
+    expect(queueReconcileBatch(state,files,2)).toBe(1);
+    expect(Object.keys(state.pending).sort()).toEqual(["a"]);
+    expect(state.reconcileCursor).toBe(1);
   });
 
   test("discovers history in a custom Codex home", async () => {

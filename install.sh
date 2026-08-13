@@ -20,12 +20,13 @@ command -v brew >/dev/null || { echo "Homebrew is required: https://brew.sh" >&2
 brew list bun >/dev/null 2>&1 || brew install bun </dev/null
 bun_bin="$(brew --prefix)/bin/bun"
 
-progress "Downloading the current collector..."
 mkdir -p "$install_dir" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
-curl -fsSL -H 'Accept: application/vnd.github.raw+json' "$repo/agent/collector.js?ref=master" -o "$tmp_dir/collector.js"
-curl -fsSL -H 'Accept: application/vnd.github.raw+json' "$repo/agent/enroll.js?ref=master" -o "$tmp_dir/enroll.js"
+progress "Downloading the current collector..."
+curl -fL --show-error --progress-bar -H 'Accept: application/vnd.github.raw+json' "$repo/agent/collector.js?ref=master" -o "$tmp_dir/collector.js"
+progress "Downloading the authorization helper..."
+curl -fL --show-error --progress-bar -H 'Accept: application/vnd.github.raw+json' "$repo/agent/enroll.js?ref=master" -o "$tmp_dir/enroll.js"
 install -m 755 "$tmp_dir/collector.js" "$install_dir/collector.js"
 install -m 755 "$tmp_dir/enroll.js" "$install_dir/enroll.js"
 
@@ -77,4 +78,4 @@ echo "Codex Stats installation complete for '$system_name'."
 echo "The background service is checking historical sessions and may continue after this command exits."
 echo "Local status and manual sync: http://127.0.0.1:$dashboard_port"
 echo "Follow progress: tail -f \"$log_file\""
-echo "Automatic sync runs three minutes after Codex activity settles."
+echo "Automatic sync runs every three minutes while Codex is active; idle Macs send nothing."

@@ -4,12 +4,25 @@ import { basename, dirname, join } from "node:path";
 import { watch } from "node:fs";
 import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 
-export const DEBOUNCE_MS = 180000;
+export const ACTIVITY_SYNC_MS = 180000;
 export const RETRY_MS = 300000;
 export const BATCH_SIZE = 100;
 export const DASHBOARD_PORT = 47821;
-export const debounceDelay = (lastEvent, now = Date.now()) => Math.max(0, DEBOUNCE_MS - (now - lastEvent));
+export const activityDelay = (timerKind) => timerKind==="activity" ? null : ACTIVITY_SYNC_MS;
 export const selectMissing = (pending, ids) => { const missing=new Set(ids); return pending.filter(({session})=>missing.has(session.id)); };
+
+export function queueReconcileBatch(state,files,limit=BATCH_SIZE) {
+  const existing=Object.values(state.pending).filter((entry)=>entry?.reconcile).length, room=Math.max(0,limit-existing);
+  if(!room) return 0;
+  const unique=new Map();
+  for(const path of files) { const session=state.files[path]?.session; if(session?.id&&session.startedAt) unique.set(session.id,session); }
+  const sessions=[...unique.values()].sort((a,b)=>a.id.localeCompare(b.id));
+  if(!sessions.length) return 0;
+  const saved=state.reconcileCursor, start=Number.isSafeInteger(saved)&&saved>=0&&saved<sessions.length?saved:0, batch=sessions.slice(start,start+room);
+  for(const session of batch) if(!state.pending[session.id]) { const next=publicSession(session); state.pending[session.id]={fingerprint:JSON.stringify(next),session:next,reconcile:true}; }
+  state.reconcileCursor=start+batch.length>=sessions.length?0:start+batch.length;
+  return batch.length;
+}
 
 const PUBLIC_SESSION_KEYS = [
   "id", "startedAt", "endedAt", "cwdLabel", "repo", "branch", "source", "cliVersion", "model", "effort",
@@ -191,7 +204,7 @@ async function loadState(path) {
   try { saved = JSON.parse(await readFile(path, "utf8")); } catch { saved = {}; }
   if (!saved || typeof saved !== "object" || Array.isArray(saved)) saved = {};
   const object = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  return { files: object(saved.files), synced: object(saved.synced), pending: object(saved.pending) };
+  return { files: object(saved.files), synced: object(saved.synced), pending: object(saved.pending), reconcileCursor:Number.isSafeInteger(saved.reconcileCursor)&&saved.reconcileCursor>=0?saved.reconcileCursor:0 };
 }
 
 async function saveState(path, state) {
@@ -223,8 +236,11 @@ async function sync(reconcile=false) {
     if (queueSession(state, previous.session)) changed++;
   }
 
+  if(!reconcile) queueReconcileBatch(state,files);
+
   await saveState(statePath, state);
-  const pending = Object.values(state.pending).filter((entry) => entry?.session?.id && entry.fingerprint);
+  const allPending=Object.values(state.pending).filter((entry)=>entry?.session?.id&&entry.fingerprint);
+  const pending=reconcile?allPending:[...allPending.filter((entry)=>!entry.reconcile),...allPending.filter((entry)=>entry.reconcile).slice(0,BATCH_SIZE)];
   const parsed=Object.values(state.files).filter((entry)=>entry?.session?.id).length;
   if (!pending.length) {
     console.log("codex-stats: nothing new");
@@ -308,20 +324,21 @@ async function main() {
   if (!process.argv.includes("--watch")) return sync(true);
   const root = process.env.CODEX_HOME || join(homedir(), ".codex");
   let timer = null;
-  let lastEvent = 0;
+  let timerKind = null;
   let syncing = false;
-  let rerun = false;
+  let rerunMode = null;
   let initial = true;
   const endpoint=process.env.CODEX_STATS_URL||"https://codex-stats.pages.dev", system=process.env.CODEX_STATS_SYSTEM||hostname();
   const port=Number(process.env.CODEX_STATS_PORT)||DASHBOARD_PORT, nonce=crypto.randomUUID();
   const status={phase:"starting",system,endpoint,root,lastSuccessAt:null,nextRunAt:null,result:null,error:null};
-  const arm = (delay) => {
+  const arm = (delay,kind="activity",reconcile=false) => {
     if (timer) clearTimeout(timer);
+    timerKind=kind;
     status.nextRunAt=new Date(Date.now()+delay).toISOString();
-    timer = setTimeout(() => { timer = null; status.nextRunAt=null; void run(); }, delay);
+    timer = setTimeout(() => { timer = null; timerKind=null; status.nextRunAt=null; void run(reconcile,kind==="retry"); }, delay);
   };
-  const run = async (reconcile=initial) => {
-    if (syncing) { rerun = true; return; }
+  const run = async (reconcile=initial,retry=false) => {
+    if (syncing) { rerunMode=rerunMode===true||reconcile; return; }
     syncing = true;
     status.phase="syncing"; status.error=null; status.nextRunAt=null;
     let failed = false;
@@ -330,13 +347,13 @@ async function main() {
     finally {
       syncing = false;
       status.phase=failed?"error":"watching";
-      if (rerun) { rerun = false; arm(debounceDelay(lastEvent)); }
-      else if (failed && !timer) arm(RETRY_MS);
+      if (rerunMode!==null) { const mode=rerunMode; rerunMode=null; arm(0,"activity",mode); }
+      else if (failed && !retry && !timer) arm(RETRY_MS,"retry",reconcile);
     }
   };
   const schedule = () => {
-    lastEvent = Date.now();
-    arm(DEBOUNCE_MS);
+    const delay=activityDelay(timerKind);
+    if(delay!==null) arm(delay,"activity",false);
   };
   const watchers = ["sessions", "archived_sessions"].map((name) => {
     try { return watch(join(root, name), { recursive: true }, (_event, file) => { if (!file || file.endsWith(".jsonl")) schedule(); }); }
@@ -344,10 +361,10 @@ async function main() {
   }).filter(Boolean);
   if (!watchers.length) throw new Error(`No Codex session directories found under ${root}`);
   await run();
-  console.log("codex-stats: watching for Codex activity (3 minute debounce)");
+  console.log("codex-stats: syncing every 3 minutes while Codex is active");
   let dashboard;
   try {
-    dashboard=Bun.serve({hostname:"127.0.0.1",port,fetch:(request)=>localDashboardResponse(request,status,nonce,async()=>{ if(timer){clearTimeout(timer);timer=null;} await run(true); },port)});
+    dashboard=Bun.serve({hostname:"127.0.0.1",port,fetch:(request)=>localDashboardResponse(request,status,nonce,async()=>{ if(timer){clearTimeout(timer);timer=null;timerKind=null;status.nextRunAt=null;} await run(true); },port)});
     console.log(`codex-stats: local dashboard http://127.0.0.1:${port}`);
   } catch(error) { console.error(`codex-stats: local dashboard unavailable: ${error.message}`); }
   const stop = () => { if (timer) clearTimeout(timer); watchers.forEach((watcher) => watcher.close()); dashboard?.stop(); process.exit(0); };

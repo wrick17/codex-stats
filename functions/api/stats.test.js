@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { aggregateSkills, collectorOwner, estimatedCost, ingestSessions, isOwner, issueCollectorCredential, onRequest, parsePrices, SESSION_UPSERT_SQL, statsScope, statsWindow } from "./[[path]].js";
+import { aggregateSkills, cadenceScope, collectorOwner, estimatedCost, ingestSessions, isOwner, issueCollectorCredential, onRequest, parsePrices, SESSION_UPSERT_SQL, statsScope, statsWindow } from "./[[path]].js";
 
 async function signedIngest(body, secret="secret", email="wrick17@gmail.com") {
   const credential=await issueCollectorCredential({pairwise_sub:"owner",email},secret);
@@ -33,6 +33,7 @@ describe("daily API price estimate", () => {
     expect(statsWindow("365",1_000_000).days).toBe(30);
     expect(statsScope("lifetime","all","owner@example.com",1_000_000)).toMatchObject({where:"owner_email = ?",args:["owner@example.com"]});
     expect(statsScope("lifetime","machine","owner@example.com",1_000_000)).toMatchObject({where:"owner_email = ? AND system_id = ?",args:["owner@example.com","machine"]});
+    expect(cadenceScope("machine","owner@example.com",Date.UTC(2026,7,13,12))).toEqual({where:"owner_email = ? AND started_at >= ? AND system_id = ?",args:["owner@example.com","2025-08-14T00:00:00.000Z","machine"]});
   });
 
   test("parses flagship standard and grouped Codex rates", () => {
@@ -157,6 +158,7 @@ describe("ingest backend", () => {
     const DB={prepare(value){sql=value; return {bind(...values){args=values; return {async all(){return {results:[{id:"new"}]};}};}};}};
     const response=await onRequest({request:signed.request,env:{DB,...signed.env},params:{path:["missing"]}});
     expect(sql).toContain("s.skills_json IS NULL");
+    expect(sql).toContain("s.uid=? || ':' || incoming.id");
     expect(args.slice(1)).toEqual(["wrick17@gmail.com","machine"]);
     expect(await response.json()).toEqual({missing:["new"]});
   });

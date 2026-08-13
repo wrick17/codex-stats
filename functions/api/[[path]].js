@@ -238,6 +238,12 @@ export function statsScope(value, system, ownerEmail, now=Date.now()) {
   };
 }
 
+export function cadenceScope(system,ownerEmail,now=Date.now()) {
+  const start=new Date(now); start.setUTCHours(0,0,0,0); start.setUTCDate(start.getUTCDate()-364);
+  const filteredSystem=system&&system!=="all";
+  return {where:`owner_email = ? AND started_at >= ?${filteredSystem?" AND system_id = ?":""}`,args:[ownerEmail,start.toISOString(),filteredSystem&&system].filter(Boolean)};
+}
+
 async function ingest(request, env) {
   const {identity,text}=await authenticatedCollectorRequest(request,env);
 
@@ -281,7 +287,7 @@ async function missingSessions(request,env) {
       SELECT json_extract(value,'$.id') id, json_extract(value,'$.updatedAt') updated_at FROM json_each(?)
     )
     SELECT incoming.id FROM incoming LEFT JOIN sessions_by_owner s
-      ON s.owner_email=? AND s.system_id=? AND s.id=incoming.id
+      ON s.owner_email=? AND s.uid=? || ':' || incoming.id
     WHERE s.uid IS NULL OR s.skills_json IS NULL OR COALESCE(s.ended_at,s.started_at) < incoming.updated_at
   `).bind(JSON.stringify(manifest),identity.email,systemId).all();
   return json({missing:rows.results.map((row)=>row.id)});
@@ -292,6 +298,7 @@ async function stats(request, env) {
   const url = new URL(request.url);
   const system = clean(url.searchParams.get("system"), 80);
   const { days, since, where, args } = statsScope(url.searchParams.get("days"),system,ownerEmail);
+  const dailyScope=days==="lifetime"?{where,args}:cadenceScope(system,ownerEmail);
   const today = new Date().toISOString().slice(0,10);
   const bind = (statement) => statement.bind(...args);
   const systemJoin = `x.owner_email=s.owner_email AND x.system_id=s.id${since ? " AND x.started_at >= ?" : ""}`;
@@ -303,8 +310,8 @@ async function stats(request, env) {
       COALESCE(SUM(duration_ms),0) duration_ms, COALESCE(SUM(tool_count),0) tools,
       COALESCE(SUM(user_messages),0) prompts, COALESCE(SUM(error_count),0) errors,
       COUNT(DISTINCT system_id) systems, COUNT(DISTINCT repo) repos FROM sessions_by_owner WHERE ${where}`)),
-    bind(env.DB.prepare(`SELECT date(started_at) day, COUNT(*) sessions, SUM(total_tokens) tokens,
-      SUM(tool_count) tools, SUM(duration_ms) duration_ms FROM sessions_by_owner WHERE ${where} GROUP BY day ORDER BY day`)),
+    env.DB.prepare(`SELECT date(started_at) day, COUNT(*) sessions, SUM(total_tokens) tokens,
+      SUM(tool_count) tools, SUM(duration_ms) duration_ms FROM sessions_by_owner WHERE ${dailyScope.where} GROUP BY day ORDER BY day`).bind(...dailyScope.args),
     env.DB.prepare(`SELECT s.id, s.name, s.platform, s.arch, s.codex_version, s.last_seen_at,
       COUNT(x.uid) sessions, COALESCE(SUM(x.total_tokens),0) tokens FROM systems_by_owner s LEFT JOIN sessions_by_owner x
       ON ${systemJoin} WHERE s.owner_email=? GROUP BY s.id ORDER BY tokens DESC`).bind(...[since,ownerEmail].filter(Boolean)),

@@ -58,6 +58,7 @@ function renderHeatmap(rows, label) {
   $("month-labels").innerHTML=`<span></span>${Array.from({length:columns},(_,i)=>`<span>${monthAt.get(i)||""}</span>`).join("")}`;
   const visibleRows=rows.filter(row=>{ const date=new Date(`${row.day}T00:00:00Z`); return date>=yearStart&&date<=today; }), max=Math.max(...visibleRows.map((d)=>Number(d.sessions)),1);
   heatmap.innerHTML=cells.map(date=>{ const day=date.toISOString().slice(0,10), row=byDay[day]; if(!row||date<yearStart||date>today) return '<i class="outside" aria-hidden="true"></i>'; const count=Number(row.sessions||0),level=count?Math.max(1,Math.ceil(count/max*4)):0; return `<i class="l${level}" aria-hidden="true" ${tooltipData(row)}></i>`; }).join("");
+  requestAnimationFrame(()=>{ const body=heatmap.closest(".cadence-body"); body.scrollLeft=body.scrollWidth; });
   const active=visibleRows.filter((d)=>Number(d.sessions)).length;
   heatmap.setAttribute("aria-label",`Rolling-year session activity calendar for ${label}. ${active} active days visible.`);
   $("active-days").textContent=`${active} active days`;
@@ -94,7 +95,7 @@ function render(data) {
   $("kpi-time").textContent=fmtTime(s.duration_ms); $("kpi-prompts").textContent=`${number.format(s.prompts)} prompts`;
   $("kpi-tools").textContent=number.format(s.tools); $("kpi-errors").textContent=`${number.format(s.errors)} errors observed`;
   $("kpi-cost").textContent=fmtCost(data.estimatedCost?.usd); $("kpi-cost-note").textContent=`${Math.round((data.estimatedCost?.coverage??1)*100)}% priced`;
-  renderTrend(daily,window==="lifetime"); renderHeatmap(daily,window==="lifetime"?"lifetime":`${window} days`); renderRing(s); renderRanks("models",data.models); renderRanks("repos",data.repos); renderRanks("skills",data.skills||[],"count");
+  renderTrend(daily,window==="lifetime"); renderHeatmap(data.daily,"rolling year"); renderRing(s); renderRanks("models",data.models); renderRanks("repos",data.repos); renderRanks("skills",data.skills||[],"count");
   $("machines").innerHTML=data.systems.map(m=>`<article class="machine"><h3>${esc(m.name)}</h3><span>${esc(m.platform)} / ${esc(m.arch)} · Codex ${esc(m.codex_version)}</span><div class="machine-stats"><div>Sessions<b>${number.format(m.sessions)}</b></div><div>Tokens<b>${fmtTokens(m.tokens)}</b></div><div>Last seen<b>${fmtDate(m.last_seen_at).split(",")[0]}</b></div></div></article>`).join("");
   $("recent").innerHTML=data.recent.map(r=>`<tr><td>${fmtDate(r.started_at)}</td><td class="repo-cell">${esc(r.repo)}</td><td>${esc(r.system)}</td><td>${esc(r.model)} / ${esc(r.effort)}</td><td>${fmtTokens(r.total_tokens)}</td><td>${fmtTime(r.duration_ms)}</td><td>${number.format(r.tool_count)}</td><td><span class="status ${esc(r.status)}">${esc(r.status)}</span></td></tr>`).join("");
   const select=$("system"), selected=requestedSystem||select.value; select.innerHTML='<option value="all">All systems</option>'+data.systems.map(m=>`<option value="${esc(m.id)}">${esc(m.name)}</option>`).join(""); select.value=[...select.options].some(o=>o.value===selected)?selected:"all"; requestedSystem=select.value; persistFilters();
