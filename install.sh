@@ -72,7 +72,6 @@ progress "Installing and starting the background service..."
 uid="$(id -u)"
 launchctl bootout "gui/$uid" "$launch_agent" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$uid" "$launch_agent"
-launchctl kickstart -k "gui/$uid/com.codex-stats.sync"
 
 echo "Codex Stats installation complete for '$system_name'."
 echo "The background service is checking historical sessions and may continue after this command exits."
