@@ -68,7 +68,7 @@ EOF
 
 chmod 600 "$launch_agent"
 plutil -lint "$launch_agent" >/dev/null
-progress "Installing and starting the background service..."
+progress "Installing and starting the background service (launchd may take up to one minute)..."
 uid="$(id -u)"
 launchctl bootout "gui/$uid" "$launch_agent" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$uid" "$launch_agent"
