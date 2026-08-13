@@ -16,8 +16,7 @@ const server=Bun.serve({
     let credential;
     try { credential=(await request.formData()).get("credential"); } catch {}
     if (typeof credential!=="string" || !credential.startsWith("v1.") || credential.length>4096) return new Response("Invalid credential",{status:400,headers});
-    const process=Bun.spawn(["/usr/bin/security","add-generic-password","-a","codex-stats","-s","codex-stats-ingest","-U","-w"],{stdin:"pipe",stdout:"ignore",stderr:"ignore"});
-    process.stdin.write(`${credential}\n${credential}\n`); process.stdin.end();
+    const process=Bun.spawn(["/usr/bin/security","add-generic-password","-a","codex-stats","-s","codex-stats-ingest","-w",credential,"-U"],{stdout:"ignore",stderr:"ignore"});
     if (await process.exited) return new Response("Keychain write failed",{status:500,headers});
     setTimeout(finish.resolve,100);
     return new Response("<!doctype html><title>Codex Stats</title><p>This Mac is authorized. You may close this tab.</p>",{headers});
