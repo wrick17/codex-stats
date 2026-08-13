@@ -16,8 +16,9 @@ bun_bin="$(brew --prefix)/bin/bun"
 mkdir -p "$install_dir" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
-curl -fsSL "$repo/agent/collector.js" -o "$tmp_dir/collector.js"
-curl -fsSL "$repo/agent/enroll.js" -o "$tmp_dir/enroll.js"
+cache_bust="$(date +%s)"
+curl -fsSL "$repo/agent/collector.js?$cache_bust" -o "$tmp_dir/collector.js"
+curl -fsSL "$repo/agent/enroll.js?$cache_bust" -o "$tmp_dir/enroll.js"
 install -m 755 "$tmp_dir/collector.js" "$install_dir/collector.js"
 install -m 755 "$tmp_dir/enroll.js" "$install_dir/enroll.js"
 
