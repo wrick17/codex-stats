@@ -82,14 +82,14 @@ select { display: block; min-width: 124px; margin-top: 6px; padding: 7px 30px 7p
 .grid-2 .panel > header { min-height:52px; padding:13px 0 7px; }
 .grid-3 .panel > header { min-height: 64px; padding-top: 15px; }
 .cadence-body { width:100%; margin:auto 0; overflow-x:hidden; }
-.cadence-calendar { --cell:10px; --gap:3px; --gutter:27px; --column-gap:4px; width:max-content; margin:0 auto; display:grid; grid-template-columns:var(--gutter) auto; grid-template-rows:14px auto; column-gap:var(--column-gap); }
-.month-labels { grid-column:1/-1; display:grid; grid-template-columns:var(--gutter) repeat(var(--columns),var(--cell)); gap:var(--gap); color:var(--dim); font-size:9px; white-space:nowrap; overflow:visible; }
+.cadence-calendar { --gap:clamp(1px,.22vw,3px); --gutter:27px; --column-gap:4px; width:100%; margin:0 auto; display:grid; grid-template-columns:var(--gutter) minmax(0,1fr); grid-template-rows:14px auto; column-gap:var(--column-gap); }
+.month-labels { grid-column:1/-1; display:grid; grid-template-columns:var(--gutter) repeat(var(--columns),minmax(0,1fr)); gap:var(--gap); color:var(--dim); font-size:9px; white-space:nowrap; overflow:visible; }
 .month-labels span { overflow:visible; }
 .weekday-labels { display:grid; grid-template-rows:repeat(7,1fr); gap:var(--gap); color:var(--dim); font-size:9px; line-height:1; }
 .weekday-labels span:nth-child(1){grid-row:2}.weekday-labels span:nth-child(2){grid-row:4}.weekday-labels span:nth-child(3){grid-row:6}
 .cadence-grid { min-width:0; }
-.heatmap { display:grid; grid-template-columns:repeat(var(--columns),var(--cell)); grid-template-rows:repeat(var(--rows),var(--cell)); grid-auto-flow:column; gap:var(--gap); }
-.heatmap i { width:var(--cell); height:var(--cell); border-radius:2px; background:#292929; position:relative; outline:none; }
+.heatmap { display:grid; grid-template-columns:repeat(var(--columns),minmax(0,1fr)); grid-template-rows:repeat(var(--rows),auto); grid-auto-flow:column; gap:var(--gap); }
+.heatmap i { width:100%; height:auto; aspect-ratio:1; border-radius:2px; background:#292929; position:relative; outline:none; }
 .heatmap i:hover { box-shadow: 0 0 0 2px #ececec; }
 .heatmap .future { visibility: hidden; }
 .heatmap .outside { background:#202020; }
@@ -149,11 +149,11 @@ tbody tr:last-child td { border: 0; }.repo-cell { color: var(--text); font-weigh
 }
 @media (max-width: 620px) {
   .masthead { padding: 0 12px; }.top-link,.live span { display:none; }.dashboard-nav { padding:14px 0; margin-bottom:16px; }.hero { flex-direction:column; gap:12px; }.filters { width:100%; }.filters label { flex:1; }select { width:100%; min-width:0; }.kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }.grid-2 { grid-template-columns:1fr; }.grid-2 .panel { padding-right:10px; padding-left:10px; }.kpis article { min-height:96px; padding:14px; }.kpis strong { font-size:22px; }.machine-grid { grid-template-columns:1fr; }.ring-wrap { grid-template-columns:1fr 1fr; }.trend { height:132px; }
-  .cadence-calendar { --cell:4.8px; --gap:1px; --gutter:22px; --column-gap:3px; grid-template-rows:11px auto; }
+  .cadence-calendar { --gutter:22px; --column-gap:3px; grid-template-rows:11px auto; }
   .month-labels,.weekday-labels { font-size:7px; }
   .heatmap i { border-radius:1px; }
   .heatmap-scale { margin-top:6px; }
 }
-@media (max-width: 360px) { .cadence-calendar { --cell:3.95px; --gap:.6px; --gutter:20px; --column-gap:2px; }.month-labels,.weekday-labels { font-size:6px; } }
+@media (max-width: 360px) { .cadence-calendar { --gutter:20px; --column-gap:2px; }.month-labels,.weekday-labels { font-size:6px; } }
 @media (max-width: 320px) { .kpis { grid-template-columns:1fr; } }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior:auto !important; transition:none !important; } }
