@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
-import { homedir, hostname, platform, arch } from "node:os";
+import { homedir, hostname, platform, arch, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { watch } from "node:fs";
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 
 export const DEBOUNCE_MS = 180000;
 export const RETRY_MS = 300000;
@@ -172,7 +172,17 @@ async function signature(token, timestamp, body) {
 async function post(url, body, token) {
   const timestamp = Date.now().toString();
   const headers = { "Content-Type": "application/json", "X-Codex-Token":token, "X-Codex-Timestamp": timestamp, "X-Codex-Signature": await signature(token, timestamp, body) };
-  return fetch(url, { method: "POST", headers, body });
+  if (platform()!=="darwin") return fetch(url,{method:"POST",headers,body});
+  const bodyPath=join(tmpdir(),`codex-stats-${process.pid}-${crypto.randomUUID()}.json`);
+  await writeFile(bodyPath,body,{mode:0o600});
+  try {
+    const config=Object.entries(headers).map(([name,value])=>`header = "${name}: ${value}"`).join("\n");
+    const child=Bun.spawn(["/usr/bin/curl","--silent","--show-error","--write-out","\n%{http_code}","--request","POST","--data-binary",`@${bodyPath}`,url,"--config","-"],{stdin:"pipe",stdout:"pipe",stderr:"pipe"});
+    child.stdin.write(config); child.stdin.end();
+    const [exitCode,output,error]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);
+    const match=output.match(/\n(\d{3})$/), status=match?Number(match[1]):0, text=match?output.slice(0,-4):output||error;
+    return {ok:exitCode===0&&status>=200&&status<300,status:status||500,text:async()=>text};
+  } finally { await unlink(bodyPath).catch(()=>{}); }
 }
 
 async function loadState(path) {
