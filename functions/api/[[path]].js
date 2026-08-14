@@ -195,6 +195,12 @@ export function ingestSessions(sessions, systemId, ownerEmail, now) {
   });
 }
 
+export function ingestWeeklyUsage(value) {
+  const remainingPercent=Number(value?.remainingPercent), resetsAt=Number(value?.resetsAt);
+  return Number.isFinite(remainingPercent) && remainingPercent>=0 && remainingPercent<=100 && Number.isSafeInteger(resetsAt) && resetsAt>0
+    ? {remainingPercent,resetsAt} : null;
+}
+
 export const SESSION_UPSERT_SQL = `
   INSERT INTO sessions_by_owner (owner_email,uid,id,system_id,started_at,ended_at,cwd_label,repo,branch,source,cli_version,model,effort,status,
     input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,total_tokens,duration_ms,
@@ -255,6 +261,7 @@ async function ingest(request, env) {
 
   const now = new Date().toISOString();
   const system = body.system, systemId = clean(system.id, 80), sessions = ingestSessions(body.sessions, systemId, identity.email, now);
+  const weeklyUsage=ingestWeeklyUsage(body.weeklyUsage);
   const sessionJson = JSON.stringify(sessions);
   if (new TextEncoder().encode(sessionJson).byteLength > 1_900_000) return json({ error:"Session batch is too large" }, 413);
   const statements = [env.DB.prepare(`
@@ -266,6 +273,10 @@ async function ingest(request, env) {
   `).bind(identity.email,systemId, clean(system.name, 80) || "Unknown system", clean(system.hostname, 120),
     clean(system.platform, 40), clean(system.arch, 40), clean(system.codexVersion, 40), now),
     env.DB.prepare(SESSION_UPSERT_SQL).bind(sessionJson)];
+  if (weeklyUsage) statements.push(env.DB.prepare(`
+    INSERT INTO weekly_usage_by_owner (owner_email,remaining_percent,resets_at,updated_at) VALUES (?,?,?,?)
+    ON CONFLICT(owner_email) DO UPDATE SET remaining_percent=excluded.remaining_percent,resets_at=excluded.resets_at,updated_at=excluded.updated_at
+  `).bind(identity.email,weeklyUsage.remainingPercent,weeklyUsage.resetsAt,now));
 
   await env.DB.batch(statements);
   return json({ ok: true, accepted:sessions.length, syncedAt: now });
@@ -303,7 +314,7 @@ async function stats(request, env) {
   const bind = (statement) => statement.bind(...args);
   const systemJoin = `x.owner_email=s.owner_email AND x.system_id=s.id${since ? " AND x.started_at >= ?" : ""}`;
 
-  const [summary, daily, systems, models, repos, recent, rows, priceCache] = await env.DB.batch([
+  const [summary, daily, systems, models, repos, recent, rows, priceCache, weeklyUsage] = await env.DB.batch([
     bind(env.DB.prepare(`SELECT COUNT(*) sessions, COALESCE(SUM(total_tokens),0) tokens,
       COALESCE(SUM(input_tokens),0) input_tokens, COALESCE(SUM(cached_input_tokens),0) cached_tokens,
       COALESCE(SUM(output_tokens),0) output_tokens, COALESCE(SUM(reasoning_tokens),0) reasoning_tokens,
@@ -324,6 +335,7 @@ async function stats(request, env) {
       FROM sessions_by_owner x JOIN systems_by_owner s ON s.owner_email=x.owner_email AND s.id=x.system_id WHERE ${where.replaceAll("owner_email","x.owner_email").replaceAll("started_at", "x.started_at")} ORDER BY x.started_at DESC LIMIT 30`)),
     bind(env.DB.prepare(`SELECT date(started_at) day, skills_json, model, total_tokens, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens FROM sessions_by_owner WHERE ${where}`)),
     env.DB.prepare("SELECT rates_json, source_url, fetched_at FROM pricing_cache WHERE day=?").bind(today),
+    env.DB.prepare("SELECT remaining_percent,resets_at,updated_at FROM weekly_usage_by_owner WHERE owner_email=?").bind(ownerEmail),
   ]);
 
   const pricing = await prices(env,today,priceCache.results[0] || null);
@@ -333,6 +345,7 @@ async function stats(request, env) {
     systems: systems.results, models: models.results, repos: repos.results, recent: recent.results,
     skills:aggregateSkills(rows.results),
     dailyModels,
+    weeklyUsage:weeklyUsage.results[0] || null,
     estimatedCost: { ...cost, source:pricing.source, ratesFetchedAt:pricing.fetchedAt, stale:pricing.stale },
   });
 }

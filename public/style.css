@@ -53,6 +53,8 @@ select { display: block; min-width: 124px; margin-top: 6px; padding: 7px 30px 7p
 .panel-note { white-space: nowrap; }
 .kpis strong { margin: auto 0 6px; font-size: 24px; line-height: 1; letter-spacing: -.03em; }
 .kpis small { color: var(--muted); font-size: 11px; }
+.kpis progress { width: 100%; height: 4px; margin: 0 0 7px; border: 0; border-radius: 4px; overflow: hidden; background: #333; color: var(--sage); }
+.kpis progress::-webkit-progress-bar { background: #333; }.kpis progress::-webkit-progress-value { background: var(--sage); }.kpis progress::-moz-progress-bar { background: var(--sage); }
 .kpis article:first-child strong { color: #abc3a5; }
 
 .panel { min-width: 0; border-top: 1px solid #202020; background: transparent; }

@@ -170,6 +170,21 @@ async function codexVersion() {
   try { return (await Bun.$`codex --version`.text()).trim().replace(/^codex-cli\s+/, ""); } catch { return null; }
 }
 
+export function weeklyUsageFromResponse(body) {
+  const window=body?.rate_limit?.primary_window, used=Number(window?.used_percent), resetsAt=Number(window?.reset_at);
+  if (!Number.isFinite(used) || used<0 || used>100 || !Number.isSafeInteger(resetsAt) || resetsAt<=0) return null;
+  return {remainingPercent:Math.round((100-used)*10)/10,resetsAt};
+}
+
+async function weeklyUsage(root) {
+  try {
+    const auth=JSON.parse(await readFile(join(root,"auth.json"),"utf8")), token=auth?.tokens?.access_token, accountId=auth?.tokens?.account_id;
+    if (!token || !accountId) return null;
+    const response=await fetch("https://chatgpt.com/backend-api/codex/usage",{headers:{Authorization:`Bearer ${token}`,"ChatGPT-Account-Id":accountId},signal:AbortSignal.timeout(10000)});
+    return response.ok ? weeklyUsageFromResponse(await response.json()) : null;
+  } catch { return null; }
+}
+
 async function collectorToken() {
   if (process.env.CODEX_STATS_TOKEN) return process.env.CODEX_STATS_TOKEN;
   if (platform() === "darwin") {
@@ -251,6 +266,7 @@ async function sync(reconcile=false) {
   if (!token) throw new Error("Set CODEX_STATS_TOKEN (or add codex-stats-ingest to macOS Keychain)");
   const id = await installationId(codexRoot);
   const system = { id, name: process.env.CODEX_STATS_SYSTEM || hostname(), hostname: hostname(), platform: platform(), arch: arch(), codexVersion: await codexVersion() };
+  const usage=await weeklyUsage(codexRoot);
   const base=endpoint.replace(/\/$/,"");
   let uploaded=0, current=0;
   for (let offset=0;offset<pending.length;offset+=BATCH_SIZE) {
@@ -262,8 +278,8 @@ async function sync(reconcile=false) {
       if (!check.ok) throw new Error(`Reconciliation failed (${check.status}): ${await check.text()}`);
       required.push(...selectMissing(historical,JSON.parse(await check.text()).missing||[]));
     }
-    if (required.length) {
-      const body=JSON.stringify({system,sessions:required.map(({session})=>session)});
+    if (required.length || (usage && offset===0)) {
+      const body=JSON.stringify({system,sessions:required.map(({session})=>session),weeklyUsage:usage});
       const response=await post(`${base}/api/ingest`,body,token);
       if (!response.ok) throw new Error(`Sync failed (${response.status}): ${await response.text()}`);
     }

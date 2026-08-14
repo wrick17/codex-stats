@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { aggregateSkills, cadenceScope, collectorOwner, estimatedCost, ingestSessions, isOwner, issueCollectorCredential, onRequest, parsePrices, SESSION_UPSERT_SQL, statsScope, statsWindow } from "./[[path]].js";
+import { aggregateSkills, cadenceScope, collectorOwner, estimatedCost, ingestSessions, ingestWeeklyUsage, isOwner, issueCollectorCredential, onRequest, parsePrices, SESSION_UPSERT_SQL, statsScope, statsWindow } from "./[[path]].js";
 
 async function signedIngest(body, secret="secret", email="wrick17@gmail.com") {
   const credential=await issueCollectorCredential({pairwise_sub:"owner",email},secret);
@@ -98,6 +98,11 @@ Fast mode
 });
 
 describe("ingest backend", () => {
+  test("accepts only bounded weekly usage snapshots", () => {
+    expect(ingestWeeklyUsage({remainingPercent:73,resetsAt:1787201417})).toEqual({remainingPercent:73,resetsAt:1787201417});
+    expect(ingestWeeklyUsage({remainingPercent:-1,resetsAt:1787201417})).toBeNull();
+  });
+
   test("normalizes a large payload for one json_each statement", () => {
     const sessions=ingestSessions([
       {id:"a",startedAt:"2026-08-13T00:00:00Z",inputTokens:-4,tools:{exec:2},skills:{imagegen:2}},
@@ -150,6 +155,12 @@ describe("ingest backend", () => {
     expect(prepared).toHaveLength(2);
     expect(await response.json()).toMatchObject({ok:true,accepted:2});
     expect(response.headers.get("Cache-Control")).toContain("no-store");
+  });
+
+  test("authenticated ingest stores a weekly usage snapshot", async () => {
+    const {request,env}=await signedIngest({system:{id:"machine"},sessions:[],weeklyUsage:{remainingPercent:73,resetsAt:1787201417}});
+    const DB={prepare(sql){return {bind(...args){return {sql,args};}};},async batch(statements){expect(statements).toHaveLength(3); expect(statements[2].sql).toContain("weekly_usage_by_owner");}};
+    expect((await onRequest({request,env:{DB,...env},params:{path:["ingest"]}})).status).toBe(200);
   });
 
   test("reconciles timestamps inside the authenticated owner scope", async () => {

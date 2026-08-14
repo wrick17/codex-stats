@@ -37,6 +37,7 @@ The collector reads `~/.codex/sessions` and `~/.codex/archived_sessions`, then s
 - Codex version, model, and reasoning effort
 - token, turn, tool, error, and sub-agent counts
 - loaded skill names and counts, never skill contents
+- weekly Codex usage-limit percentage remaining and reset time from OpenAI
 
 Prompts, responses, reasoning content, tool payloads, auth/config files, shell snapshots, and logs never leave the machine.
 

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ACTIVITY_SYNC_MS, BATCH_SIZE, DASHBOARD_PORT, activityDelay, freshSession, jsonlFiles, localDashboardResponse, parseLine, publicSession, queueReconcileBatch, queueSession, recoverSessions, selectMissing, skillReads } from "./collector.js";
+import { ACTIVITY_SYNC_MS, BATCH_SIZE, DASHBOARD_PORT, activityDelay, freshSession, jsonlFiles, localDashboardResponse, parseLine, publicSession, queueReconcileBatch, queueSession, recoverSessions, selectMissing, skillReads, weeklyUsageFromResponse } from "./collector.js";
 
 describe("collector", () => {
   test("keeps only aggregate session metadata and latest cumulative usage", () => {
@@ -32,6 +32,11 @@ describe("collector", () => {
     expect(activityDelay("retry")).toBe(180_000);
     expect(ACTIVITY_SYNC_MS).toBe(180_000);
     expect(BATCH_SIZE).toBe(100);
+  });
+
+  test("keeps only the weekly percentage remaining and reset time from OpenAI usage", () => {
+    expect(weeklyUsageFromResponse({rate_limit:{primary_window:{used_percent:27,reset_at:1787201417}}})).toEqual({remainingPercent:73,resetsAt:1787201417});
+    expect(weeklyUsageFromResponse({rate_limit:{primary_window:{used_percent:101,reset_at:1787201417}}})).toBeNull();
   });
 
   test("serves loopback status and protects manual sync", async () => {
