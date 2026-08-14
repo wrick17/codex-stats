@@ -8,6 +8,7 @@ export const ACTIVITY_SYNC_MS = 180000;
 export const RETRY_MS = 300000;
 export const BATCH_SIZE = 100;
 export const DASHBOARD_PORT = 47821;
+const LONG_CONTEXT_TOKENS = 272000;
 export const activityDelay = (timerKind) => timerKind==="activity" ? null : ACTIVITY_SYNC_MS;
 export const selectMissing = (pending, ids) => { const missing=new Set(ids); return pending.filter(({session})=>missing.has(session.id)); };
 
@@ -27,7 +28,7 @@ export function queueReconcileBatch(state,files,limit=BATCH_SIZE) {
 const PUBLIC_SESSION_KEYS = [
   "id", "startedAt", "endedAt", "cwdLabel", "repo", "branch", "source", "cliVersion", "model", "effort",
   "status", "inputTokens", "cachedInputTokens", "cacheWriteTokens", "outputTokens", "reasoningTokens", "totalTokens",
-  "durationMs", "userMessages", "assistantMessages", "turnCount", "toolCount", "errorCount", "subagentCount", "tools", "skills",
+  "durationMs", "userMessages", "assistantMessages", "turnCount", "toolCount", "errorCount", "subagentCount", "tools", "skills", "modelUsage",
 ];
 
 export const publicSession = (session) => ({
@@ -58,7 +59,7 @@ export function recoverSessions(state, reconcile=false) {
     const fileId = basename(path).match(/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/)?.[1];
     const session = entry?.session;
     if (!fileId || !session) continue;
-    if (!Object.hasOwn(session, "skills")) {
+    if (!Object.hasOwn(session, "skills") || !Object.hasOwn(session, "modelUsage")) {
       entry.offset = 0;
       entry.session = freshSession();
       recovered++;
@@ -81,7 +82,7 @@ export const freshSession = () => ({
   cliVersion: null, model: null, effort: null, status: "active", inputTokens: 0, cachedInputTokens: 0,
   cacheWriteTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0, durationMs: 0,
   userMessages: 0, assistantMessages: 0, turnCount: 0, toolCount: 0, errorCount: 0, subagentCount: 0,
-  tools: {}, skills: {}, _firstTs: null, _lastTs: null, _turns: {}, _subagents: {},
+  tools: {}, skills: {}, modelUsage: {}, _tokenUsage: {}, _firstTs: null, _lastTs: null, _turns: {}, _subagents: {},
 });
 
 const noteTime = (session, timestamp) => {
@@ -120,12 +121,23 @@ export function parseLine(session, line) {
     if (["task_aborted", "turn_aborted"].includes(payload.type)) { session.status = "aborted"; session.endedAt = record.timestamp; }
     if (payload.type === "token_count" && payload.info?.total_token_usage) {
       const usage = payload.info.total_token_usage;
-      session.inputTokens = Number(usage.input_tokens || 0);
-      session.cachedInputTokens = Number(usage.cached_input_tokens || 0);
-      session.cacheWriteTokens = Number(usage.cache_write_input_tokens || 0);
-      session.outputTokens = Number(usage.output_tokens || 0);
-      session.reasoningTokens = Number(usage.reasoning_output_tokens || 0);
-      session.totalTokens = Number(usage.total_tokens || 0);
+      const next = {
+        inputTokens:Number(usage.input_tokens || 0), cachedInputTokens:Number(usage.cached_input_tokens || 0),
+        cacheWriteTokens:Number(usage.cache_write_input_tokens || 0), outputTokens:Number(usage.output_tokens || 0),
+        reasoningTokens:Number(usage.reasoning_output_tokens || 0),
+      };
+      // ponytail: Codex counters are cumulative; a future reset needs explicit reset semantics.
+      const delta=Object.fromEntries(Object.entries(next).map(([key,value])=>[key,Math.max(0,value-Number(session._tokenUsage[key]||0))]));
+      session._tokenUsage=next;
+      if (session.model || session.source !== "subagent") {
+        const model=session.model||"Unknown", bucket=session.modelUsage[model]||={inputTokens:0,cachedInputTokens:0,cacheWriteTokens:0,outputTokens:0,reasoningTokens:0};
+        const long=delta.inputTokens>LONG_CONTEXT_TOKENS;
+        for (const key of Object.keys(next)) {
+          session[key]+=delta[key]; bucket[key]+=delta[key];
+          if (long) { const longKey=`long${key[0].toUpperCase()}${key.slice(1)}`; bucket[longKey]=(bucket[longKey]||0)+delta[key]; }
+        }
+        session.totalTokens=session.inputTokens+session.outputTokens;
+      }
     }
     if (payload.type === "sub_agent_activity" && payload.agent_thread_id) session._subagents[payload.agent_thread_id] = 1;
     if (payload.type === "mcp_tool_call_end" && (payload.result?.isError || payload.result?.Err)) session.errorCount++;

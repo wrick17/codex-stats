@@ -82,7 +82,10 @@ export function parsePrices(markdown) {
     const cells = line.split("|").slice(1,-1).map((cell)=>cell.trim());
     const money = (cell) => Number(cell?.replace(/[$,]/g,"")) || 0;
     if (section === "Standard pricing data" && cells[0]?.startsWith("gpt-") && cells.length >= 5) {
-      rates[cells[0].replace(/\s+\(.*/,"")] = { input:money(cells[1]), cached:money(cells[2]), cacheWrite:money(cells[3]), output:money(cells[4]) };
+      const rate={ input:money(cells[1]), cached:money(cells[2]), cacheWrite:money(cells[3]), output:money(cells[4]) };
+      const long={ input:money(cells[5]), cached:money(cells[6]), cacheWrite:money(cells[7]), output:money(cells[8]) };
+      if (Object.values(long).some(Boolean)) rate.long=long;
+      rates[cells[0].replace(/\s+\(.*/,"")] = rate;
     } else if (tier === "Standard" && section === "Grouped Pricing Table data" && cells[0] === "Codex" && cells[1]?.startsWith("gpt-") && cells.length >= 5) {
       const input = money(cells[2]);
       rates[cells[1]] = { input, cached:money(cells[3]), cacheWrite:input, output:money(cells[4]) };
@@ -127,25 +130,41 @@ export function estimatedCost(rows, rates) {
   const days = new Map();
   const modelsByDay = new Map();
   for (const row of rows) {
-    const input=Number(row.input_tokens||0), cached=Number(row.cached_input_tokens||0), cacheWrite=Number(row.cache_write_tokens||0), output=Number(row.output_tokens||0), rate=rates[row.model];
-    const tokens=Number(row.total_tokens ?? input+output), model=row.model || "Unknown";
+    const input=Number(row.input_tokens||0), cached=Number(row.cached_input_tokens||0), cacheWrite=Number(row.cache_write_tokens||0), output=Number(row.output_tokens||0);
+    let usages=[{model:row.model||"Unknown",input,cached,cacheWrite,output,longInput:0,longCached:0,longCacheWrite:0,longOutput:0,tokens:Number(row.total_tokens??input+output)}];
+    try {
+      const split=Object.entries(JSON.parse(row.model_usage_json)).map(([model,usage])=>({
+        model,input:Number(usage.inputTokens||0),cached:Number(usage.cachedInputTokens||0),cacheWrite:Number(usage.cacheWriteTokens||0),output:Number(usage.outputTokens||0),
+        longInput:Number(usage.longInputTokens||0),longCached:Number(usage.longCachedInputTokens||0),longCacheWrite:Number(usage.longCacheWriteTokens||0),longOutput:Number(usage.longOutputTokens||0),
+        tokens:Number(usage.inputTokens||0)+Number(usage.outputTokens||0),
+      }));
+      const valid=split.length && split.every((usage)=>[usage.input,usage.cached,usage.cacheWrite,usage.output,usage.longInput,usage.longCached,usage.longCacheWrite,usage.longOutput,usage.tokens].every((value)=>Number.isFinite(value)&&value>=0) &&
+        usage.cached+usage.cacheWrite<=usage.input && usage.longCached+usage.longCacheWrite<=usage.longInput &&
+        usage.longInput<=usage.input && usage.longCached<=usage.cached && usage.longCacheWrite<=usage.cacheWrite && usage.longOutput<=usage.output);
+      if (valid && split.reduce((sum,usage)=>sum+usage.tokens,0)===input+output) usages=split;
+    } catch {}
     const day = days.get(row.day) || { day:row.day, usd:0, pricedTokens:0, totalTokens:0 };
     const dayModels = modelsByDay.get(row.day) || new Map();
-    const contribution = dayModels.get(model) || { model, sessions:0, tokens:0, usd:0 };
-    contribution.sessions += 1;
-    contribution.tokens += tokens;
-    dayModels.set(model,contribution);
     modelsByDay.set(row.day,dayModels);
     day.totalTokens += input + output;
     totals.totalTokens += input + output;
     days.set(row.day, day);
-    if (!rate) continue;
-    const usd = (Math.max(0,input-cached-cacheWrite)*rate.input + cached*rate.cached + cacheWrite*rate.cacheWrite + output*rate.output) / 1e6;
-    contribution.usd += usd;
-    day.usd += usd;
-    day.pricedTokens += input + output;
-    totals.usd += usd;
-    totals.pricedTokens += input + output;
+    for (const usage of usages) {
+      const contribution=dayModels.get(usage.model)||{model:usage.model,sessions:0,tokens:0,usd:0};
+      contribution.sessions+=1;
+      contribution.tokens+=usage.tokens;
+      dayModels.set(usage.model,contribution);
+      const rate=rates[usage.model];
+      if (!rate) continue;
+      const price=(input,cached,write,output,prices)=>(Math.max(0,input-cached-write)*prices.input+cached*prices.cached+write*prices.cacheWrite+output*prices.output)/1e6;
+      const usd=price(usage.input-usage.longInput,usage.cached-usage.longCached,usage.cacheWrite-usage.longCacheWrite,usage.output-usage.longOutput,rate)+
+        price(usage.longInput,usage.longCached,usage.longCacheWrite,usage.longOutput,rate.long||rate);
+      contribution.usd+=usd;
+      day.usd+=usd;
+      day.pricedTokens+=usage.tokens;
+      totals.usd+=usd;
+      totals.pricedTokens+=usage.tokens;
+    }
   }
   return {
     usd:totals.usd, coverage:totals.totalTokens ? totals.pricedTokens/totals.totalTokens : 1,
@@ -176,6 +195,19 @@ export function ingestSessions(sessions, systemId, ownerEmail, now) {
   return sessions.flatMap((session) => {
     const id = clean(session?.id, 80), startedAt = clean(session?.startedAt, 40);
     if (!id || !startedAt) return [];
+    const modelUsage={};
+    if (session.modelUsage && typeof session.modelUsage === "object" && !Array.isArray(session.modelUsage)) {
+      for (const [name,usage] of Object.entries(session.modelUsage).slice(0,20)) {
+        const model=clean(name,80);
+        if (model && usage && typeof usage === "object" && !Array.isArray(usage)) modelUsage[model]={
+          inputTokens:integer(usage.inputTokens),cachedInputTokens:integer(usage.cachedInputTokens),
+          cacheWriteTokens:integer(usage.cacheWriteTokens),outputTokens:integer(usage.outputTokens),
+          reasoningTokens:integer(usage.reasoningTokens),longInputTokens:integer(usage.longInputTokens),
+          longCachedInputTokens:integer(usage.longCachedInputTokens),longCacheWriteTokens:integer(usage.longCacheWriteTokens),
+          longOutputTokens:integer(usage.longOutputTokens),longReasoningTokens:integer(usage.longReasoningTokens),
+        };
+      }
+    }
     return [{
       ownerEmail, uid:`${systemId}:${id}`, id, systemId, startedAt, endedAt:clean(session.endedAt, 40),
       cwdLabel:clean(session.cwdLabel, 100), repo:clean(session.repo, 100), branch:clean(session.branch, 120),
@@ -190,6 +222,7 @@ export function ingestSessions(sessions, systemId, ownerEmail, now) {
       subagentCount:integer(session.subagentCount),
       toolsJson:session.tools && typeof session.tools === "object" ? JSON.stringify(session.tools).slice(0, 8000) : "{}",
       skillsJson:session.skills && typeof session.skills === "object" ? JSON.stringify(session.skills).slice(0,8000) : null,
+      modelUsageJson:Object.hasOwn(session,"modelUsage") ? JSON.stringify(modelUsage) : null,
       updatedAt:now,
     }];
   });
@@ -204,7 +237,7 @@ export function ingestWeeklyUsage(value) {
 export const SESSION_UPSERT_SQL = `
   INSERT INTO sessions_by_owner (owner_email,uid,id,system_id,started_at,ended_at,cwd_label,repo,branch,source,cli_version,model,effort,status,
     input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,total_tokens,duration_ms,
-    user_messages,assistant_messages,turn_count,tool_count,error_count,subagent_count,tools_json,skills_json,updated_at)
+    user_messages,assistant_messages,turn_count,tool_count,error_count,subagent_count,tools_json,skills_json,model_usage_json,updated_at)
   SELECT
     json_extract(value,'$.ownerEmail'), json_extract(value,'$.uid'), json_extract(value,'$.id'), json_extract(value,'$.systemId'),
     json_extract(value,'$.startedAt'), json_extract(value,'$.endedAt'), json_extract(value,'$.cwdLabel'),
@@ -215,7 +248,7 @@ export const SESSION_UPSERT_SQL = `
     json_extract(value,'$.totalTokens'), json_extract(value,'$.durationMs'), json_extract(value,'$.userMessages'),
     json_extract(value,'$.assistantMessages'), json_extract(value,'$.turnCount'), json_extract(value,'$.toolCount'),
     json_extract(value,'$.errorCount'), json_extract(value,'$.subagentCount'), json_extract(value,'$.toolsJson'),
-    json_extract(value,'$.skillsJson'),
+    json_extract(value,'$.skillsJson'), json_extract(value,'$.modelUsageJson'),
     json_extract(value,'$.updatedAt')
   FROM json_each(?) WHERE 1
   ON CONFLICT(owner_email,uid) DO UPDATE SET ended_at=excluded.ended_at,cwd_label=excluded.cwd_label,repo=excluded.repo,
@@ -226,7 +259,8 @@ export const SESSION_UPSERT_SQL = `
     duration_ms=excluded.duration_ms,user_messages=excluded.user_messages,assistant_messages=excluded.assistant_messages,
     turn_count=excluded.turn_count,tool_count=excluded.tool_count,error_count=excluded.error_count,
     subagent_count=excluded.subagent_count,tools_json=excluded.tools_json,
-    skills_json=COALESCE(excluded.skills_json,sessions_by_owner.skills_json),updated_at=excluded.updated_at
+    skills_json=COALESCE(excluded.skills_json,sessions_by_owner.skills_json),
+    model_usage_json=COALESCE(excluded.model_usage_json,sessions_by_owner.model_usage_json),updated_at=excluded.updated_at
 `;
 
 export function statsWindow(value, now=Date.now()) {
@@ -299,7 +333,8 @@ async function missingSessions(request,env) {
     )
     SELECT incoming.id FROM incoming LEFT JOIN sessions_by_owner s
       ON s.owner_email=? AND s.uid=? || ':' || incoming.id
-    WHERE s.uid IS NULL OR s.skills_json IS NULL OR COALESCE(s.ended_at,s.started_at) < incoming.updated_at
+    WHERE s.uid IS NULL OR s.skills_json IS NULL OR s.model_usage_json IS NULL
+      OR COALESCE(s.ended_at,s.started_at) < incoming.updated_at
   `).bind(JSON.stringify(manifest),identity.email,systemId).all();
   return json({missing:rows.results.map((row)=>row.id)});
 }
@@ -333,7 +368,7 @@ async function stats(request, env) {
     bind(env.DB.prepare(`SELECT x.id, x.started_at, x.ended_at, x.repo, x.branch, x.model, x.effort, x.status,
       x.total_tokens, x.output_tokens, x.duration_ms, x.tool_count, x.error_count, s.name system
       FROM sessions_by_owner x JOIN systems_by_owner s ON s.owner_email=x.owner_email AND s.id=x.system_id WHERE ${where.replaceAll("owner_email","x.owner_email").replaceAll("started_at", "x.started_at")} ORDER BY x.started_at DESC LIMIT 30`)),
-    bind(env.DB.prepare(`SELECT date(started_at) day, skills_json, model, total_tokens, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens FROM sessions_by_owner WHERE ${where}`)),
+    bind(env.DB.prepare(`SELECT date(started_at) day, skills_json, model_usage_json, model, total_tokens, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens FROM sessions_by_owner WHERE ${where}`)),
     env.DB.prepare("SELECT rates_json, source_url, fetched_at FROM pricing_cache WHERE day=?").bind(today),
     env.DB.prepare("SELECT remaining_percent,resets_at,updated_at FROM weekly_usage_by_owner WHERE owner_email=?").bind(ownerEmail),
   ]);

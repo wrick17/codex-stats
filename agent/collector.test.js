@@ -26,6 +26,25 @@ describe("collector", () => {
     expect(queueSession(state, session)).toBe(true);
   });
 
+  test("attributes cumulative token deltas to each model without inherited subagent usage", () => {
+    const session=freshSession();
+    const usage=(input,cached,cacheWrite,output,reasoning=0)=>JSON.stringify({type:"event_msg",payload:{type:"token_count",info:{total_token_usage:{input_tokens:input,cached_input_tokens:cached,cache_write_input_tokens:cacheWrite,output_tokens:output,reasoning_output_tokens:reasoning}}}});
+    parseLine(session,JSON.stringify({type:"session_meta",payload:{id:"child",thread_source:"subagent"}}));
+    parseLine(session,usage(100,40,5,20,2));
+    parseLine(session,JSON.stringify({type:"turn_context",payload:{model:"gpt-luna"}}));
+    parseLine(session,usage(150,60,8,30,5));
+    parseLine(session,usage(150,60,8,30,5));
+    parseLine(session,JSON.stringify({type:"turn_context",payload:{model:"gpt-sol"}}));
+    parseLine(session,usage(300150,60060,10008,1030,7));
+
+    expect(session).toMatchObject({inputTokens:300050,cachedInputTokens:60020,cacheWriteTokens:10003,outputTokens:1010,reasoningTokens:5,totalTokens:301060,model:"gpt-sol"});
+    expect(session.modelUsage).toEqual({
+      "gpt-luna":{inputTokens:50,cachedInputTokens:20,cacheWriteTokens:3,outputTokens:10,reasoningTokens:3},
+      "gpt-sol":{inputTokens:300000,cachedInputTokens:60000,cacheWriteTokens:10000,outputTokens:1000,reasoningTokens:2,longInputTokens:300000,longCachedInputTokens:60000,longCacheWriteTokens:10000,longOutputTokens:1000,longReasoningTokens:2},
+    });
+    expect(publicSession(session)).not.toHaveProperty("_tokenUsage");
+  });
+
   test("syncs at most every three active minutes without postponing the timer", () => {
     expect(activityDelay(null)).toBe(180_000);
     expect(activityDelay("activity")).toBeNull();
@@ -123,14 +142,15 @@ describe("collector", () => {
     expect(recoverSessions(state)).toBe(0);
   });
 
-  test("reparses pre-skill state once", () => {
+  test("reparses pre-aggregate state once", () => {
     const id = "019fea4f-89ba-7c71-b93d-53002d3bf32d";
     const legacy = { ...freshSession(), id, startedAt: "2026-01-01T00:00:00Z" };
     delete legacy.skills;
+    delete legacy.modelUsage;
     const path = `/tmp/rollout-2026-01-01T00-00-00-${id}.jsonl`;
     const state = { files: { [path]: { offset: 100, session: legacy } }, synced: { [id]: "already-synced" }, pending: {} };
 
     expect(recoverSessions(state)).toBe(1);
-    expect(state.files[path]).toMatchObject({ offset: 0, session: { id: null, skills: {} } });
+    expect(state.files[path]).toMatchObject({ offset: 0, session: { id: null, skills: {}, modelUsage: {} } });
   });
 });

@@ -38,9 +38,9 @@ describe("daily API price estimate", () => {
 
   test("parses flagship standard and grouped Codex rates", () => {
     const rates=parsePrices(`### Standard pricing data
-| Model | Short context input | Short context cached input | Short context cache writes | Short context output | Long context input |
-| --- | --- | --- | --- | --- | --- |
-| gpt-5.6-sol | $5.00 | $0.50 | $6.25 | $30.00 | $10.00 |
+| Model | Short context input | Short context cached input | Short context cache writes | Short context output | Long context input | Long context cached input | Long context cache writes | Long context output |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| gpt-5.6-sol | $5.00 | $0.50 | $6.25 | $30.00 | $10.00 | $1.00 | $12.50 | $45.00 |
 ### Batch pricing data
 | gpt-5.6-sol | $2.50 | $0.25 | $3.125 | $15.00 | $5.00 |
 Standard
@@ -56,7 +56,7 @@ Fast mode
 | Category | Model | Input | Cached input | Output |
 | Codex | gpt-5.3-codex | $3.50 | $0.35 | $28.00 |
 `);
-    expect(rates["gpt-5.6-sol"]).toEqual({ input:5, cached:.5, cacheWrite:6.25, output:30 });
+    expect(rates["gpt-5.6-sol"]).toEqual({ input:5, cached:.5, cacheWrite:6.25, output:30, long:{input:10,cached:1,cacheWrite:12.5,output:45} });
     expect(rates["gpt-5.3-codex"].output).toBe(14);
     expect(rates["gpt-5.3-codex"].cacheWrite).toBe(1.75);
     expect(rates["gpt-realtime"]).toBeUndefined();
@@ -95,6 +95,18 @@ Fast mode
     expect(dailyModels["2026-08-14"][0]).toMatchObject({model:"gpt-priced",sessions:1,tokens:30});
     expect(dailyModels["2026-08-14"][0].usd).toBeCloseTo(0.00004);
   });
+
+  test("prices each model used within a session", () => {
+    const rates={"gpt-luna":{input:.2,cached:.02,cacheWrite:.25,output:1.25},"gpt-sol":{input:5,cached:.5,cacheWrite:6.25,output:30}};
+    const result=estimatedCost([{
+      day:"2026-08-13",model:"gpt-sol",input_tokens:1_300_000,cached_input_tokens:500_000,cache_write_tokens:150_000,output_tokens:150_000,
+      model_usage_json:JSON.stringify({"gpt-luna":{inputTokens:1_000_000,cachedInputTokens:400_000,cacheWriteTokens:100_000,outputTokens:100_000},"gpt-sol":{inputTokens:300_000,cachedInputTokens:100_000,cacheWriteTokens:50_000,outputTokens:50_000,longInputTokens:300_000,longCachedInputTokens:100_000,longCacheWriteTokens:50_000,longOutputTokens:50_000}}),
+    }],{...rates,"gpt-sol":{...rates["gpt-sol"],long:{input:10,cached:1,cacheWrite:12.5,output:45}}});
+    expect(result.usd).toBeCloseTo(4.733);
+    expect(result.coverage).toBe(1);
+    expect(result.dailyModels["2026-08-13"].map(({model,tokens})=>[model,tokens])).toEqual([["gpt-luna",1_100_000],["gpt-sol",350_000]]);
+    expect(estimatedCost([{day:"2026-08-13",model:"gpt-sol",input_tokens:1_100_000,model_usage_json:'{"gpt-luna":{"inputTokens":1}}'}],rates).usd).toBeCloseTo(5.5);
+  });
 });
 
 describe("ingest backend", () => {
@@ -105,31 +117,31 @@ describe("ingest backend", () => {
 
   test("normalizes a large payload for one json_each statement", () => {
     const sessions=ingestSessions([
-      {id:"a",startedAt:"2026-08-13T00:00:00Z",inputTokens:-4,tools:{exec:2},skills:{imagegen:2}},
+      {id:"a",startedAt:"2026-08-13T00:00:00Z",inputTokens:-4,tools:{exec:2},skills:{imagegen:2},modelUsage:{}},
       {id:null,startedAt:"2026-08-13T00:00:00Z"},
     ],"machine","owner@example.com","2026-08-13T01:00:00Z");
     expect(sessions).toHaveLength(1);
-    expect(sessions[0]).toMatchObject({ownerEmail:"owner@example.com",uid:"machine:a",inputTokens:0,toolsJson:'{"exec":2}',skillsJson:'{"imagegen":2}'});
+    expect(sessions[0]).toMatchObject({ownerEmail:"owner@example.com",uid:"machine:a",inputTokens:0,toolsJson:'{"exec":2}',skillsJson:'{"imagegen":2}',modelUsageJson:"{}"});
     expect(SESSION_UPSERT_SQL).toContain("FROM json_each(?)");
   });
 
-  test("set-upserts skills and preserves them when an older collector omits the field", () => {
+  test("set-upserts new aggregates and preserves them when an older collector omits the fields", () => {
     const db=new Database(":memory:");
-    db.run(`CREATE TABLE sessions_by_owner (owner_email TEXT,uid TEXT,id TEXT,system_id TEXT,started_at TEXT,ended_at TEXT,cwd_label TEXT,repo TEXT,branch TEXT,source TEXT,cli_version TEXT,model TEXT,effort TEXT,status TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,cache_write_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,total_tokens INTEGER,duration_ms INTEGER,user_messages INTEGER,assistant_messages INTEGER,turn_count INTEGER,tool_count INTEGER,error_count INTEGER,subagent_count INTEGER,tools_json TEXT,skills_json TEXT,updated_at TEXT,PRIMARY KEY(owner_email,uid))`);
-    const rows=ingestSessions([{id:"a",startedAt:"2026-08-13",totalTokens:10,skills:{imagegen:2}},{id:"b",startedAt:"2026-08-13",totalTokens:20}],"machine","owner@example.com","now");
+    db.run(`CREATE TABLE sessions_by_owner (owner_email TEXT,uid TEXT,id TEXT,system_id TEXT,started_at TEXT,ended_at TEXT,cwd_label TEXT,repo TEXT,branch TEXT,source TEXT,cli_version TEXT,model TEXT,effort TEXT,status TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,cache_write_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,total_tokens INTEGER,duration_ms INTEGER,user_messages INTEGER,assistant_messages INTEGER,turn_count INTEGER,tool_count INTEGER,error_count INTEGER,subagent_count INTEGER,tools_json TEXT,skills_json TEXT,model_usage_json TEXT,updated_at TEXT,PRIMARY KEY(owner_email,uid))`);
+    const rows=ingestSessions([{id:"a",startedAt:"2026-08-13",totalTokens:10,skills:{imagegen:2},modelUsage:{"gpt-priced":{inputTokens:10}}},{id:"b",startedAt:"2026-08-13",totalTokens:20,modelUsage:{}}],"machine","owner@example.com","now");
     db.query(SESSION_UPSERT_SQL).run(JSON.stringify(rows));
     const older=ingestSessions([{id:"a",startedAt:"2026-08-13",totalTokens:30}],"machine","owner@example.com","later");
     db.query(SESSION_UPSERT_SQL).run(JSON.stringify(older));
-    expect(db.query("SELECT id,total_tokens,skills_json FROM sessions_by_owner ORDER BY id").all()).toEqual([
-      {id:"a",total_tokens:30,skills_json:'{"imagegen":2}'},
-      {id:"b",total_tokens:20,skills_json:null},
+    expect(db.query("SELECT id,total_tokens,skills_json,model_usage_json FROM sessions_by_owner ORDER BY id").all()).toEqual([
+      {id:"a",total_tokens:30,skills_json:'{"imagegen":2}',model_usage_json:'{"gpt-priced":{"inputTokens":10,"cachedInputTokens":0,"cacheWriteTokens":0,"outputTokens":0,"reasoningTokens":0,"longInputTokens":0,"longCachedInputTokens":0,"longCacheWriteTokens":0,"longOutputTokens":0,"longReasoningTokens":0}}'},
+      {id:"b",total_tokens:20,skills_json:null,model_usage_json:"{}"},
     ]);
     db.close();
   });
 
   test("keeps identical session ids isolated by owner", () => {
     const db=new Database(":memory:");
-    db.run(`CREATE TABLE sessions_by_owner (owner_email TEXT,uid TEXT,id TEXT,system_id TEXT,started_at TEXT,ended_at TEXT,cwd_label TEXT,repo TEXT,branch TEXT,source TEXT,cli_version TEXT,model TEXT,effort TEXT,status TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,cache_write_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,total_tokens INTEGER,duration_ms INTEGER,user_messages INTEGER,assistant_messages INTEGER,turn_count INTEGER,tool_count INTEGER,error_count INTEGER,subagent_count INTEGER,tools_json TEXT,skills_json TEXT,updated_at TEXT,PRIMARY KEY(owner_email,uid))`);
+    db.run(`CREATE TABLE sessions_by_owner (owner_email TEXT,uid TEXT,id TEXT,system_id TEXT,started_at TEXT,ended_at TEXT,cwd_label TEXT,repo TEXT,branch TEXT,source TEXT,cli_version TEXT,model TEXT,effort TEXT,status TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,cache_write_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,total_tokens INTEGER,duration_ms INTEGER,user_messages INTEGER,assistant_messages INTEGER,turn_count INTEGER,tool_count INTEGER,error_count INTEGER,subagent_count INTEGER,tools_json TEXT,skills_json TEXT,model_usage_json TEXT,updated_at TEXT,PRIMARY KEY(owner_email,uid))`);
     db.query(SESSION_UPSERT_SQL).run(JSON.stringify(ingestSessions([{id:"same",startedAt:"2026-08-13",totalTokens:10}],"mac","one@example.com","now")));
     db.query(SESSION_UPSERT_SQL).run(JSON.stringify(ingestSessions([{id:"same",startedAt:"2026-08-13",totalTokens:20}],"mac","two@example.com","now")));
     expect(db.query("SELECT owner_email,total_tokens FROM sessions_by_owner ORDER BY owner_email").all()).toEqual([
@@ -169,6 +181,7 @@ describe("ingest backend", () => {
     const DB={prepare(value){sql=value; return {bind(...values){args=values; return {async all(){return {results:[{id:"new"}]};}};}};}};
     const response=await onRequest({request:signed.request,env:{DB,...signed.env},params:{path:["missing"]}});
     expect(sql).toContain("s.skills_json IS NULL");
+    expect(sql).toContain("s.model_usage_json IS NULL");
     expect(sql).toContain("s.uid=? || ':' || incoming.id");
     expect(args.slice(1)).toEqual(["wrick17@gmail.com","machine"]);
     expect(await response.json()).toEqual({missing:["new"]});
